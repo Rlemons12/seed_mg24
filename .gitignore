@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+
+# Arduino / embedded build output
+build/
+dist/
+out/
+*.bin
+*.elf
+*.hex
+*.map
+*.uf2
+*.lst
+*.o
+*.d
+
+# Logs and local runtime files
+*.log
+*.tmp
+*.bak
+serial.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini

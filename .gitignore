@@ -21,6 +21,7 @@ env/
 # Arduino / embedded build output
 build/
 dist/
+sensor_package/config/device_config.local.h
 out/
 *.bin
 *.elf
@@ -36,6 +37,11 @@ out/
 *.tmp
 *.bak
 serial.log
+.env
+data/
+*.db
+*.db-shm
+*.db-wal
 
 # OS files
 .DS_Store

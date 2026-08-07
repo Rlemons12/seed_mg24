@@ -1,0 +1,136 @@
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from gateway import __version__
+from gateway.app.api import commands, devices, health, installations, nodes, profiles, telemetry
+from gateway.app.ble.manager import BleManager
+from gateway.app.ble.scanner import BleScannerService
+from gateway.app.config import Settings, get_settings
+from gateway.app.database import (
+    create_database_engine,
+    create_session_factory,
+    get_session,
+    initialize_database,
+    session_dependency,
+)
+from gateway.app.logging_config import configure_logging
+from gateway.app.models import utc_now
+from gateway.app.profiles.registry import ProfileRegistry
+from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.repositories.firmware_repository import FirmwareHistoryRepository
+from gateway.app.services.compatibility_service import CompatibilityService
+from gateway.app.services.provisioning_service import SensorProvisioningService
+from gateway.app.services.telemetry_service import TelemetryService
+from gateway.app.services.websocket_manager import WebSocketManager
+
+PACKAGE_DIR = Path(__file__).parent
+REPOSITORY_DIR = PACKAGE_DIR.parents[1]
+
+
+def create_app(settings: Settings | None = None, *, client_factory=None, scanner_factory=None) -> FastAPI:
+    settings = settings or get_settings()
+    configure_logging(settings.log_level)
+    engine = create_database_engine(settings)
+    session_factory = create_session_factory(engine)
+    initialize_database(engine)
+    profile_registry = ProfileRegistry(
+        settings.sensor_profile_directory, REPOSITORY_DIR / "sensor_package" / "profiles" / "built_in", settings.max_profile_upload_bytes
+    )
+    profile_registry.reload()
+    compatibility = CompatibilityService(REPOSITORY_DIR / "shared_protocol" / "compatibility.json")
+    websocket_manager = WebSocketManager()
+    telemetry_service = TelemetryService(session_factory, websocket_manager, settings.max_payload_bytes, settings.max_payload_json_bytes)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async def status_callback(device_id: str, state: str, error: str | None) -> None:
+            with session_factory() as session:
+                repository = DeviceRepository(session)
+                device = repository.get(device_id)
+                if device:
+                    if state == "connected":
+                        connection = manager.connections.get(device_id)
+                        metadata = connection.metadata if connection else {}
+                        result = compatibility.evaluate(metadata)
+                        repository.update(
+                            device,
+                            firmware_version=metadata.get("firmware_version", metadata.get("fw", device.firmware_version)),
+                            telemetry_schema_version=metadata.get("v", device.telemetry_schema_version),
+                            sensor_package_version=metadata.get("sensor_package_version"),
+                            protocol_version=metadata.get("protocol_version"),
+                            configuration_schema_version=metadata.get("configuration_schema_version"),
+                            build_identifier=metadata.get("build_identifier"),
+                            firmware_git_commit=metadata.get("git_commit"),
+                            compatibility_status=result.status,
+                            compatibility_message=result.message,
+                        )
+                        if all(metadata.get(key) not in (None, "") for key in FirmwareHistoryRepository.TRACKED[:-1]):
+                            FirmwareHistoryRepository(session).record(device_id, metadata, result.status)
+                        repository.update_runtime(device, status=state, last_connected_at=utc_now())
+                    else:
+                        repository.update_runtime(device, status=state)
+            await websocket_manager.broadcast("device_status", device_id, {"connection_status": state, "last_error": error})
+
+        manager = BleManager(settings, telemetry_service.ingest, status_callback, client_factory=client_factory)
+        app.state.ble_manager = manager
+        with session_factory() as session:
+            for device in DeviceRepository(session).list():
+                if device.enabled and device.ble_address:
+                    manager.schedule(device.device_id, device.ble_address)
+        yield
+        await manager.shutdown()
+        engine.dispose()
+
+    app = FastAPI(title="Seed MG24 Gateway", version=__version__, lifespan=lifespan)
+    app.state.version = __version__
+    app.state.settings = settings
+    app.state.session_factory = session_factory
+    app.state.websocket_manager = websocket_manager
+    app.state.profile_registry = profile_registry
+    app.state.provisioning_service = SensorProvisioningService(
+        session_factory, profile_registry, timeout_seconds=settings.provisioning_timeout_seconds
+    )
+    app.state.scanner = BleScannerService(settings.scan_duration_seconds, settings.discovery_ttl_seconds, scanner_factory)
+    app.state.ble_manager = BleManager(settings, telemetry_service.ingest, lambda *_: None, client_factory=client_factory)
+    app.dependency_overrides[get_session] = session_dependency(session_factory)
+    app.include_router(health.router)
+    app.include_router(devices.router)
+    app.include_router(commands.router)
+    app.include_router(telemetry.router)
+    app.include_router(telemetry.ws_router)
+    app.include_router(profiles.router)
+    app.include_router(nodes.router)
+    app.include_router(installations.router)
+    app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def dashboard() -> FileResponse:
+        return FileResponse(PACKAGE_DIR / "templates" / "index.html")
+
+    @app.exception_handler(HTTPException)
+    async def structured_http_error(request: Request, exc: HTTPException):
+        response = await http_exception_handler(request, exc)
+        return JSONResponse(status_code=response.status_code, content={"error": "request_error", "detail": exc.detail})
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError):
+        details = [
+            {"field": ".".join(str(part) for part in item["loc"] if part not in {"body", "query"}), "message": item["msg"]}
+            for item in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"error": "validation_error", "detail": details})
+
+    @app.exception_handler(Exception)
+    async def internal_error(_request: Request, _exc: Exception):
+        return JSONResponse(status_code=500, content={"error": "internal_error", "detail": "an internal error occurred"})
+
+    return app
+
+
+app = create_app()

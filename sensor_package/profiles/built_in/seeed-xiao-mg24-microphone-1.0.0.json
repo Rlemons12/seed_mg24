@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "profile_id": "seeed.xiao_mg24_sense.microphone",
+  "profile_version": "1.0.0",
+  "manufacturer": "Seeed Studio",
+  "model": "XIAO MG24 Sense built-in microphone",
+  "display_name": "Built-in microphone raw and estimated level",
+  "description": "Existing built-in microphone telemetry as implemented by this repository. Raw counts and the existing estimated percent are preserved.",
+  "category": "sound_level",
+  "datasheet_reference": null,
+  "status": "verified",
+  "interface": {"type": "built_in", "supported_inputs": ["built_in_microphone"], "supply_voltage": null, "signal_min": null, "signal_max": null, "required_signal_conditioning": null, "wiring_notes": ["Built into the XIAO MG24 Sense; no external wiring."], "exclusive": true},
+  "measurement_channels": [
+    {"channel_id": "microphone_raw", "display_name": "Microphone raw", "quantity": null, "raw_data_type": "integer", "raw_unit": "adc_count", "engineering_unit": null, "range_min": null, "range_max": null, "value_kind": "raw"},
+    {"channel_id": "microphone_percent", "display_name": "Microphone estimated percent", "quantity": "relative_sound_level", "raw_data_type": "integer", "raw_unit": "percent", "engineering_unit": "percent", "range_min": 0, "range_max": 100, "value_kind": "derived"}
+  ],
+  "conversion": {"type": "identity", "gain": null, "offset": null, "coefficients": null, "points": null},
+  "sampling": {"minimum_interval_ms": 50, "default_interval_ms": 100, "maximum_interval_ms": 5000},
+  "filter": {"supported": ["none", "ema", "moving_average", "median"], "default": "ema", "maximum_window": 9},
+  "alarms": {"supported": true, "defaults_enabled": false, "warning_low": null, "warning_high": null, "alarm_low": null, "alarm_high": null},
+  "firmware": {"minimum_version": null, "required_capabilities": ["built_in_microphone"]},
+  "provenance": {"source": "seed_mg24 repository firmware", "verified": true, "verified_by": "repository implementation", "verified_at": null, "reference": "sensor_package/firmware/xiao_mg24_sensor_node/xiao_mg24_sensor_node.ino"},
+  "deprecated_by": null
+}

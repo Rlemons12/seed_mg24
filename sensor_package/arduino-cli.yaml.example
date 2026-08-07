@@ -1,5 +1,5 @@
 board_manager:
   additional_urls:
-    - https://github.com/SiliconLabs/arduino/releases/download/1.0.0/package_arduinosilabs_index.json
+    - https://siliconlabs.github.io/arduino/package_arduinosilabs_index.json
 directories:
   data: .arduino-data

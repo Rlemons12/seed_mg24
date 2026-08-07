@@ -33,3 +33,20 @@ def test_firmware_processing_modules(tmp_path):
     command.extend(["-o", str(executable)])
     subprocess.run(command, check=True, capture_output=True, text=True)
     subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+
+
+def test_persistence_modules(tmp_path):
+    compiler = shutil.which("g++") or shutil.which("clang++")
+    if compiler is None:
+        pytest.skip("no host C++ compiler is installed")
+    package = Path(__file__).parents[2]
+    firmware = package / "firmware" / "xiao_mg24_sensor_node"
+    executable = tmp_path / "persistence-tests"
+    command = [compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror", f"-I{firmware}", str(package / "tests/native/persistence_tests.cpp")]
+    command.extend(
+        str(firmware / source)
+        for source in ["persistent_record.cpp", "node_identity_store.cpp", "configuration_store.cpp", "factory_reset.cpp"]
+    )
+    command.extend(["-o", str(executable)])
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    subprocess.run([str(executable)], check=True, capture_output=True, text=True)

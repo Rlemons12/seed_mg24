@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "sensor_types.h"
+#include "nvm_backend.h"
 
 struct StoredChannelConfiguration {
   uint32_t magic;
@@ -18,6 +19,7 @@ struct StoredChannelConfiguration {
   uint8_t reserved2;
   uint32_t checksum;
 };
+static_assert(sizeof(StoredChannelConfiguration) == 36, "configuration record layout changed");
 
 uint32_t configuration_checksum(const StoredChannelConfiguration& value);
 bool validate_stored_configuration(const StoredChannelConfiguration& value);
@@ -37,4 +39,12 @@ class VolatileConfigurationStore {
   uint32_t last_write_ms_;
   uint32_t minimum_write_interval_ms_;
   uint32_t write_count_;
+};
+
+class PersistentConfigurationStore {
+ public:
+  explicit PersistentConfigurationStore(NvmBackend& backend):backend_(backend){}
+  StoreStatus load(StoredChannelConfiguration* output) const;
+  StoreStatus write(const StoredChannelConfiguration& value, StoredChannelConfiguration* verified);
+ private: NvmBackend& backend_;
 };

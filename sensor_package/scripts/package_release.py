@@ -22,6 +22,7 @@ def sha256(path: Path) -> str:
 def create_release(artifact: Path, output: Path) -> Path:
     version = (PACKAGE / "VERSION").read_text(encoding="utf-8").strip()
     protocol = (ROOT / "shared_protocol" / "VERSION").read_text(encoding="utf-8").strip()
+    toolchain = json.loads((PACKAGE / "toolchain.json").read_text(encoding="utf-8"))
     release = output / f"sensor-package-{version}"
     if release.exists():
         raise FileExistsError(f"release directory already exists: {release}")
@@ -34,8 +35,13 @@ def create_release(artifact: Path, output: Path) -> Path:
         commit = "unknown"
     manifest = {"schema_version": 1, "sensor_package_version": version, "firmware_version": version,
                 "protocol_version": protocol, "configuration_schema_version": 1, "git_commit": commit,
-                "build_status": "compiled-unverified", "board_fqbn": "SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs",
-                "required_core": "SiliconLabs:silabs", "required_libraries": ["LSM6DS3"],
+                "build_status": "compiled-unverified",
+                "board_fqbn": f"{toolchain['board']['fqbn']}:protocol_stack={toolchain['board']['options']['protocol_stack']}",
+                "arduino_cli_version": toolchain["arduino_cli"]["tested_version"],
+                "required_core": f"{toolchain['board_manager']['core']}@{toolchain['board_manager']['core_version']}",
+                "required_libraries": [
+                    f"{item['name']}@{item['version']}" for item in toolchain["libraries"]
+                ],
                 "artifact_filename": target.name, "artifact_sha256": sha256(target),
                 "created_at_utc": datetime.now(UTC).isoformat()}
     (release / "firmware-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

@@ -1,0 +1,1 @@
+{"type":"bootstrap_request","schema_version":1,"request_id":"reset-confirm-001","action":"confirm_factory_reset","scope":"configuration_only","confirmation_token":123456}

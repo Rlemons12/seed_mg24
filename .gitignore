@@ -39,6 +39,7 @@ out/
 serial.log
 .env
 data/
+test_output/
 *.db
 *.db-shm
 *.db-wal

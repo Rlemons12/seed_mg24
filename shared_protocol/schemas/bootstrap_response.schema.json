@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://seed-mg24.local/schemas/bootstrap_response.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "request_id", "action", "status"],
+  "properties": {
+    "type": {"const": "bootstrap_response"}, "schema_version": {"const": 1},
+    "request_id": {"type": "string", "maxLength": 40}, "action": {"type": "string", "maxLength": 40},
+    "status": {"enum": ["success", "error"]}, "error_code": {"type": "string", "maxLength": 48},
+    "result": {"type": "object", "maxProperties": 32}
+  }
+}

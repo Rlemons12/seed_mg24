@@ -2,6 +2,8 @@
 
 This repository contains firmware for Seeed Studio XIAO MG24 Sense sensor nodes, a headless Raspberry Pi BLE gateway, a local FastAPI/WebSocket dashboard, and the original Tkinter USB/BLE desktop tool.
 
+New MG24 boards are compiled and uploaded from `sensor_package`, then receive a permanent `node_id` through the USB-only framed bootstrap protocol. Identity and operational configuration use separate redundant NVM3 records. Only allowlisted `configuration_only` and `application_factory` reset scopes exist; neither is a chip erase. Every physical upload or reset requires an explicit operator checkpoint. See `sensor_package/docs/device-identity.md`.
+
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 
 ## Architecture
@@ -224,8 +226,8 @@ Install the Silicon Labs core and current firmware libraries first:
 ```bash
 arduino-cli config add board_manager.additional_urls https://siliconlabs.github.io/arduino/package_arduinosilabs_index.json
 arduino-cli core update-index
-arduino-cli core install SiliconLabs:silabs
-arduino-cli lib install "Seeed Arduino LSM6DS3"
+arduino-cli core install SiliconLabs:silabs@4.0.0
+arduino-cli lib install "Seeed Arduino LSM6DS3@2.0.7"
 ```
 
 Use `protocol_stack=none` only for the serial-only build. The firmware preserves the existing service, telemetry, and command characteristics and adds a readable metadata characteristic:

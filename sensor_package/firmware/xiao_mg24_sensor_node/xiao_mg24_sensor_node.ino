@@ -7,6 +7,10 @@
 #include "telemetry_buffer.h"
 #include "telemetry_encoder.h"
 #include "configuration_store.h"
+#include "factory_reset.h"
+#include "node_identity_store.h"
+#include "nvm_backend.h"
+#include "usb_bootstrap.h"
 #if defined(ARDUINO_SILABS_STACK_BLE_SILABS)
 #include "sl_bluetooth.h"
 #define BLE_SUPPORTED 1
@@ -46,7 +50,7 @@ uint32_t mic_level = 0;
 int led_brightness = 0;
 bool imu_ok = false;
 bool mic_ok = false;
-bool ble_enabled = false;
+bool ble_enabled = BLE_SUPPORTED;
 bool ble_connected = false;
 bool ble_notify_enabled = false;
 #if BLE_SUPPORTED
@@ -64,7 +68,19 @@ char capabilities_json[1280];
 ChannelConfig microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG;
 SensorChannel microphone_channel(&microphone_runtime_config);
 TelemetryBuffer offline_buffer;
-VolatileConfigurationStore runtime_configuration_store;
+SiliconLabsNvm3Backend application_nvm;
+NodeIdentityStore node_identity_store(application_nvm);
+PersistentConfigurationStore runtime_configuration_store(application_nvm);
+FactoryResetController factory_reset_controller(application_nvm);
+UsbBootstrapProtocol usb_bootstrap(node_identity_store, runtime_configuration_store, factory_reset_controller);
+NodeIdentity active_identity = {};
+StoreStatus identity_store_status = StoreStatus::Unprovisioned;
+StoreStatus configuration_store_status = StoreStatus::NotFound;
+
+const char* runtime_node_id() {
+  return (identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious)
+    ? active_identity.node_id : "UNASSIGNED-MG24";
+}
 
 const uint8_t analog_pins[] = {
   D0, D1, D2, D3, D4, D5
@@ -103,6 +119,7 @@ static const uuid_128 capabilities_characteristic_uuid = {
 
 void ble_initialize_gatt_db();
 void ble_start_advertising();
+void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
 void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
 bool ble_send_payload(const char* payload);
 #endif
@@ -119,7 +136,7 @@ bool parse_bounded_uint(const String& text, uint32_t minimum, uint32_t maximum, 
 void command_result(bool accepted, const char* code) {
   char response[120];
   snprintf(response, sizeof(response), "{\"t\":\"%s\",\"v\":1,\"id\":\"%s\",\"s\":%lu,\"ms\":%lu,\"code\":\"%s\"}",
-           accepted ? "ca" : "ce", DEVICE_ID, (unsigned long)telemetry_sequence++, (unsigned long)millis(), code);
+           accepted ? "ca" : "ce", runtime_node_id(), (unsigned long)telemetry_sequence++, (unsigned long)millis(), code);
   Serial.println(response);
 #if BLE_SUPPORTED
   if (ble_connected) ble_send_payload(response);
@@ -143,7 +160,7 @@ void report_runtime_configuration() {
   snprintf(response, sizeof(response),
            "{\"t\":\"ca\",\"v\":1,\"id\":\"%s\",\"s\":%lu,\"ms\":%lu,\"code\":\"readback\","
            "\"sample\":%lu,\"process\":%lu,\"report\":%lu,\"heartbeat\":%lu,\"filter\":%u,\"window\":%u,\"enabled\":%u}",
-           DEVICE_ID, (unsigned long)telemetry_sequence++, (unsigned long)millis(),
+           runtime_node_id(), (unsigned long)telemetry_sequence++, (unsigned long)millis(),
            (unsigned long)microphone_runtime_config.sample_interval_ms,
            (unsigned long)microphone_runtime_config.processing_interval_ms,
            (unsigned long)microphone_runtime_config.report_interval_ms,
@@ -183,13 +200,18 @@ bool handle_config_command(const String& command) {
   else if (field == "ENABLE" && (value == "0" || value == "1")) microphone_runtime_config.enabled = value == "1";
   else { command_result(false, "invalid_or_unsafe_setting"); return true; }
   microphone_channel.reconfigure(&microphone_runtime_config);
-  runtime_configuration_store.write(current_stored_configuration(), millis());
-  command_result(true, "applied_volatile");
+  StoredChannelConfiguration verified = {};
+  StoreStatus stored = runtime_configuration_store.write(current_stored_configuration(), &verified);
+  command_result(stored == StoreStatus::Ok, stored == StoreStatus::Ok ? "applied_persistent" : store_status_name(stored));
   return true;
 }
 
 void handle_command(String command) {
   command.trim();
+  if (command.startsWith(kBootstrapPrefix)) {
+    command_result(false, "usb_only_command");
+    return;
+  }
   command.toUpperCase();
 
   if (command == "CFGGET 1 MICROPHONE_RAW") {
@@ -325,6 +347,25 @@ void setup() {
     delay(10);
   }
   Serial.println("{\"type\":\"boot\",\"step\":\"serial\"}");
+  StoreStatus nvm_status = application_nvm.initialize();
+  if (nvm_status == StoreStatus::Ok) {
+    identity_store_status = node_identity_store.load(&active_identity);
+    StoredChannelConfiguration stored = {};
+    configuration_store_status = runtime_configuration_store.load(&stored);
+    if (configuration_store_status == StoreStatus::Ok || configuration_store_status == StoreStatus::RecoveredFromPrevious) {
+      microphone_runtime_config.sample_interval_ms = stored.sample_interval_ms;
+      microphone_runtime_config.processing_interval_ms = stored.processing_interval_ms;
+      microphone_runtime_config.report_interval_ms = stored.report_interval_ms;
+      microphone_runtime_config.heartbeat_interval_ms = stored.heartbeat_interval_ms;
+      microphone_runtime_config.filter_type = static_cast<FilterType>(stored.filter_type);
+      microphone_runtime_config.filter_window = stored.filter_window;
+      microphone_runtime_config.enabled = stored.enabled == 1;
+      microphone_channel.reconfigure(&microphone_runtime_config);
+    }
+  } else {
+    identity_store_status = nvm_status;
+    configuration_store_status = nvm_status;
+  }
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(IMU_POWER_PIN, OUTPUT);
@@ -354,10 +395,6 @@ void setup() {
     mic.startSampling(mic_samples_ready_cb);
   }
 
-  ble_enabled = BLE_SUPPORTED;
-#if BLE_SUPPORTED
-  ble_start_advertising();
-#endif
   Serial.print("{\"type\":\"boot\",\"step\":\"ble\",\"supported\":");
   Serial.print(BLE_SUPPORTED ? "true" : "false");
   Serial.print(",\"enabled\":");
@@ -366,8 +403,6 @@ void setup() {
 
   led_brightness = 0;
   update_led();
-  runtime_configuration_store.write(current_stored_configuration(), millis(), true);
-
   Serial.println("{\"type\":\"hello\",\"board\":\"Seeed Studio XIAO MG24 Sense\",\"baud\":115200}");
 }
 
@@ -470,26 +505,26 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
            "\"reporting_modes\":[\"periodic\",\"change\",\"event\",\"heartbeat\"]},"
-           "\"configuration\":{\"persistence\":\"none\",\"readback\":false}}",
-           DEVICE_ID, FIRMWARE_VERSION);
+           "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true}}",
+           runtime_node_id(), FIRMWARE_VERSION);
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_READ,
                                               0x00, 0x00, capabilities_characteristic_uuid,
                                               sl_bt_gattdb_variable_length_value, sizeof(capabilities_json),
-                                              strlen(capabilities_json), (const uint8_t*)capabilities_json,
+                                              1, &empty_value,
                                               &ble_capabilities_characteristic_handle);
   app_assert_status(sc);
 
   snprintf(metadata_json, sizeof(metadata_json),
            "{\"node_id\":\"%s\",\"sensor_package_version\":\"%s\",\"firmware_version\":\"%s\","
            "\"protocol_version\":\"%s\",\"configuration_schema_version\":%d,\"build_identifier\":\"%s\","
-           "\"git_commit\":\"%s\"}", DEVICE_ID, SENSOR_PACKAGE_VERSION, FIRMWARE_VERSION,
+           "\"git_commit\":\"%s\"}", runtime_node_id(), SENSOR_PACKAGE_VERSION, FIRMWARE_VERSION,
            PROTOCOL_VERSION, CONFIGURATION_SCHEMA_VERSION, BUILD_IDENTIFIER, FIRMWARE_GIT_COMMIT);
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_READ,
                                               0x00, 0x00, metadata_characteristic_uuid,
                                               sl_bt_gattdb_variable_length_value, sizeof(metadata_json),
-                                              strlen(metadata_json), (const uint8_t*)metadata_json,
+                                              1, &empty_value,
                                               &ble_metadata_characteristic_handle);
   app_assert_status(sc);
 
@@ -497,6 +532,20 @@ void ble_initialize_gatt_db() {
   app_assert_status(sc);
   sc = sl_bt_gattdb_commit(session_id);
   app_assert_status(sc);
+  ble_write_attribute_chunks(ble_capabilities_characteristic_handle,
+                             (const uint8_t*)capabilities_json, strlen(capabilities_json));
+  ble_write_attribute_chunks(ble_metadata_characteristic_handle,
+                             (const uint8_t*)metadata_json, strlen(metadata_json));
+}
+
+void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length) {
+  constexpr size_t kGattWriteChunkSize = 200;
+  for (size_t offset = 0; offset < length; offset += kGattWriteChunkSize) {
+    const size_t chunk_length = min(kGattWriteChunkSize, length - offset);
+    sl_status_t sc = sl_bt_gatt_server_write_attribute_value(
+      characteristic, (uint16_t)offset, chunk_length, value + offset);
+    app_assert_status(sc);
+  }
 }
 
 void ble_start_advertising() {
@@ -543,7 +592,7 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
     offline_buffer.push(record);
   } else {
     TelemetryRecord delayed;
-    if (offline_buffer.pop(&delayed) && encode_record(delayed, DEVICE_ID, ble_json, sizeof(ble_json))) {
+    if (offline_buffer.pop(&delayed) && encode_record(delayed, runtime_node_id(), ble_json, sizeof(ble_json))) {
       ble_send_payload(ble_json);
     }
     ble_send_payload(current_telemetry);
@@ -565,8 +614,22 @@ bool ble_send_payload(const char* payload) {
 #endif
 
 void loop() {
+  static char serial_line[kBootstrapMaxLine + 1];
+  static size_t serial_length = 0;
+  static bool serial_overflow = false;
   while (Serial.available()) {
-    handle_command(Serial.readStringUntil('\n'));
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      if (!serial_overflow && serial_length) {
+        serial_line[serial_length] = '\0';
+        if (!usb_bootstrap.handle_line(serial_line, Serial, millis())) handle_command(String(serial_line));
+      } else if (serial_overflow) {
+        Serial.println("MG24BOOT1 {\"type\":\"bootstrap_response\",\"schema_version\":1,\"request_id\":\"unknown\",\"action\":\"unknown\",\"status\":\"error\",\"error_code\":\"line_too_large\"}");
+      }
+      serial_length = 0; serial_overflow = false;
+    } else if (serial_length < kBootstrapMaxLine) serial_line[serial_length++] = c;
+    else serial_overflow = true;
   }
 
   update_microphone();
@@ -581,7 +644,7 @@ void loop() {
     last_heartbeat_ms = now;
     if (encode_heartbeat(telemetry_sequence++, now, battery_voltage(), offline_buffer.size(),
                          offline_buffer.dropped_count(), processing_error_count, sensor_error_count,
-                         DEVICE_ID, ble_json, sizeof(ble_json))) {
+                         runtime_node_id(), ble_json, sizeof(ble_json))) {
       ble_send_payload(ble_json);
     } else {
       processing_error_count++;

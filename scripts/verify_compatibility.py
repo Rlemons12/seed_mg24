@@ -24,6 +24,13 @@ def main() -> int:
     assert release["version"] == versions["sensor"] and release["protocol_version"] == versions["protocol"]
     if not re.fullmatch(r"SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs", release["board_fqbn"]):
         raise ValueError("BLE-enabled board FQBN is missing")
+    toolchain = json.loads((ROOT / "sensor_package/toolchain.json").read_text(encoding="utf-8"))
+    assert toolchain["board_manager"]["package_url"] == "https://siliconlabs.github.io/arduino/package_arduinosilabs_index.json"
+    assert toolchain["board_manager"]["core"] == "SiliconLabs:silabs"
+    assert toolchain["board"]["fqbn"] == "SiliconLabs:silabs:xiao_mg24"
+    assert toolchain["board"]["options"]["protocol_stack"] == "ble_silabs"
+    assert release["arduino_cli_version"] == toolchain["arduino_cli"]["tested_version"]
+    assert release["required_core"] == f"{toolchain['board_manager']['core']}@{toolchain['board_manager']['core_version']}"
     schemas = ROOT / "shared_protocol/schemas"
     for path in schemas.glob("*.json"):
         schema = json.loads(path.read_text(encoding="utf-8"))

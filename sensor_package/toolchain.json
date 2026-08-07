@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "arduino_cli": {
+    "tested_version": "1.5.1",
+    "official_release_url": "https://github.com/arduino/arduino-cli/releases/tag/v1.5.1"
+  },
+  "board_manager": {
+    "package_url": "https://siliconlabs.github.io/arduino/package_arduinosilabs_index.json",
+    "core": "SiliconLabs:silabs",
+    "core_version": "4.0.0"
+  },
+  "board": {
+    "fqbn": "SiliconLabs:silabs:xiao_mg24",
+    "options": {
+      "protocol_stack": "ble_silabs"
+    }
+  },
+  "libraries": [
+    {
+      "name": "Seeed Arduino LSM6DS3",
+      "version": "2.0.7",
+      "required_header": "LSM6DS3.h",
+      "source": "Arduino Library Manager"
+    },
+    {
+      "name": "SilabsMicrophoneAnalog",
+      "version": "core-bundled-4.0.0",
+      "required_header": "SilabsMicrophoneAnalog.h",
+      "source": "SiliconLabs:silabs core"
+    }
+  ]
+}

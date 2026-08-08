@@ -18,6 +18,7 @@ def settings(tmp_path):
         reconnect_max_seconds=1,
         reconnect_stable_seconds=1,
         poll_interval_seconds=0.2,
+        gateway_instance_lock=False,
     )
 
 

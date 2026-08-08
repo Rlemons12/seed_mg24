@@ -40,9 +40,12 @@ def test_production_advertising_starts_only_from_ble_events():
     assert "ble_start_advertising();" not in setup_body
     assert "bool ble_enabled = BLE_SUPPORTED;" in sketch
     assert "ble_enabled = BLE_SUPPORTED;" not in setup_body
-    system_boot_case = sketch.split("case sl_bt_evt_system_boot_id:", 1)[1]
-    assert "ble_initialize_gatt_db();" in system_boot_case
-    assert "ble_start_advertising();" in system_boot_case
+    system_boot_case = sketch.split("case sl_bt_evt_system_boot_id:", 1)[1].split("break;", 1)[0]
+    assert "ble_system_booted = true" in system_boot_case
+    assert "ble_initialize_gatt_db();" not in system_boot_case
+    assert "ble_start_advertising();" not in system_boot_case
+    assert "application_setup_complete = true" in setup_body
+    assert "ble_initialize_when_ready();" in sketch.split("void loop() {", 1)[1]
 
 
 def test_large_gatt_values_are_initialized_in_bounded_chunks():
@@ -68,3 +71,14 @@ def test_ble_command_callback_defers_persistence_to_main_loop():
     assert "handle_command" not in callback
     assert "runtime_configuration_store.write" not in callback
     assert "handle_command(String(command));" in loop
+
+
+def test_assigned_configuration_transaction_cannot_change_identity():
+    package = Path(__file__).parents[1]
+    sketch = (package / "firmware/xiao_mg24_sensor_node/xiao_mg24_sensor_node.ino").read_text(encoding="utf-8")
+    handler = sketch.split("bool handle_configuration_transaction", 1)[1].split("bool handle_config_command", 1)[0]
+
+    assert 'command.startsWith("CFGSET ")' in handler
+    assert "runtime_configuration_store.write" in handler
+    assert "node_identity_store.provision" not in handler
+    assert 'report_provisioning_state(transaction_id.c_str(), "configured")' in handler

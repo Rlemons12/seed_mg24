@@ -11,6 +11,7 @@ class FakeClient:
         self.node_id = node_id
         self.mismatch = mismatch
         self.callback = None
+        self.values = [100, 100, 100, 30000, 2, 2, 1]
 
     async def __aenter__(self): return self
     async def __aexit__(self, *_): return None
@@ -29,10 +30,14 @@ class FakeClient:
         if parts[0] == "PROV":
             self.node_id = parts[3]
             payload = {"t": "ca", "v": 1, "id": self.node_id, "tx": tx, "code": "provisioned"}
+        elif parts[0] == "CFGSET":
+            self.values = [int(value) for value in parts[3:10]]
+            payload = {"t": "ca", "v": 1, "id": self.node_id, "tx": tx, "code": "configured"}
         else:
             payload = {"t": "ca", "v": 1, "id": "WRONG" if self.mismatch else self.node_id, "tx": tx,
-                       "code": "readback", "sample": 100, "process": 100, "report": 100, "heartbeat": 30000,
-                       "filter": 2, "window": 2, "enabled": 1}
+                       "code": "readback", "sample": self.values[0], "process": self.values[1],
+                       "report": self.values[2], "heartbeat": self.values[3], "filter": self.values[4],
+                       "window": self.values[5], "enabled": self.values[6]}
         self.callback(None, bytearray(json.dumps(payload).encode()))
 
 
@@ -68,3 +73,14 @@ async def test_read_state_uses_correlated_readback_as_authoritative_identity():
     state = await BleNodeProvisioner(lambda _: client).read_state("address")
     assert state["readback"]["id"] == "MG24-0002"
     assert state["readback"]["code"] == "readback"
+
+
+@pytest.mark.asyncio
+async def test_assigned_device_configuration_uses_atomic_command_and_readback():
+    client = FakeClient("address", node_id="MG24-0002")
+    changed = {**CONFIG, "report_interval_ms": 200}
+    result = await BleNodeProvisioner(lambda _: client).configure(
+        "address", "MG24-0002", "abcdef0123456789", changed
+    )
+    assert result["acknowledgement"]["code"] == "configured"
+    assert result["readback"]["id"] == "MG24-0002"

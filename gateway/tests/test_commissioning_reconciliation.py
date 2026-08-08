@@ -42,6 +42,28 @@ class UnassignedProvisioner(AssignedProvisioner):
                 "readback": {"id": node_id}}
 
 
+class ConfiguringProvisioner(AssignedProvisioner):
+    FILTERS = {"none": 0, "moving_average": 1, "ema": 2, "median": 3}
+
+    def __init__(self):
+        super().__init__("MG24-0002")
+        self.configure_calls = 0
+
+    async def read_state(self, _address):
+        return {
+            "metadata": {"node_id": self.node_id, "firmware_version": "0.1.0", "protocol_version": "1.0.0"},
+            "capabilities": {"node_id": self.node_id},
+            "readback": {"id": self.node_id, "sample": 100, "process": 100, "report": 100,
+                         "heartbeat": 30000, "filter": 2, "window": 2, "enabled": 1},
+        }
+
+    async def configure(self, _address, node_id, transaction_id, configuration):
+        self.configure_calls += 1
+        assert node_id == self.node_id
+        return {"acknowledgement": {"code": "configured", "tx": transaction_id.upper()},
+                "readback": {"id": node_id, "report": configuration["report_interval_ms"]}}
+
+
 def request_body(node_id="MG24-0001"):
     return {
         "discovery_address": "AA:BB:CC:DD:EE:01",
@@ -61,7 +83,7 @@ def test_assigned_device_is_reconciled_and_not_offered_for_commissioning(client,
     assert discoveries[0]["reported_node_id"] == "MG24-0002"
     assert discoveries[0]["assigned_node_id"] == "MG24-0002"
     assert discoveries[0]["temporary_id"] is None
-    assert discoveries[0]["action"] == "recovery_or_import"
+    assert discoveries[0]["action"] == "import"
     assert discoveries[0]["commissioning_eligible"] is False
 
     response = client.post("/api/commissioning/nodes", json=request_body())
@@ -100,6 +122,36 @@ def test_existing_local_device_routes_to_reconnect_without_duplicates(client, ap
     assert provisioner.provision_calls == 0
 
 
+def test_import_assigned_device_creates_node_only_and_performs_no_write(client, app, compatible_discovery):
+    provisioner = AssignedProvisioner()
+    app.state.node_provisioner = provisioner
+    response = client.post("/api/commissioning/import", json={
+        "discovery_address": compatible_discovery.address, "display_name": "Imported MG24",
+    })
+    assert response.status_code == 200
+    assert response.json()["device_id"] == "MG24-0002"
+    assert provisioner.provision_calls == 0
+    assert len(client.get("/api/devices").json()) == 1
+    assert client.get("/api/sensor-installations").json() == []
+
+
+def test_device_configuration_is_separate_from_installations_and_idempotent(client, app, compatible_discovery):
+    provisioner = ConfiguringProvisioner()
+    app.state.node_provisioner = provisioner
+    created = client.post("/api/devices", json={
+        "device_id": "MG24-0002", "display_name": "Existing node",
+        "discovery_address": compatible_discovery.address,
+    })
+    assert created.status_code == 201
+    body = {**CONFIGURATION, "transaction_id": "409c0ffee1de0001", "report_interval_ms": 200}
+    first = client.post("/api/nodes/MG24-0002/configuration", json=body)
+    second = client.post("/api/nodes/MG24-0002/configuration", json=body)
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert provisioner.configure_calls == 1
+    assert client.get("/api/sensor-installations").json() == []
+
+
 def test_dashboard_does_not_retry_conflict_and_explains_firmware_persistence():
     script = Path("gateway/app/static/app.js").read_text(encoding="utf-8")
     template = Path("gateway/app/templates/index.html").read_text(encoding="utf-8")
@@ -109,9 +161,9 @@ def test_dashboard_does_not_retry_conflict_and_explains_firmware_persistence():
     assert submit.count('api("/api/commissioning/nodes"') == 1
     assert "while" not in submit
     assert "/api/commissioning/discoveries" in script
-    assert "Reconnect / View Sensor" in script
+    assert "Open Sensor" in script
     assert "Existing identity and configuration were preserved" in script
-    assert "Reinstalling application firmware preserves" in template
+    assert "Application installation preserves" in template
     assert 'id="new-node-fields" class="hidden"' in template
     assert 'id="provision-node-button" class="primary" disabled' in template
     assert "Explicitly allow an unconfirmed device" not in template
@@ -157,4 +209,4 @@ def test_dashboard_assets_are_revalidated_on_refresh(client):
     assert client.get("/").headers["cache-control"] == "no-cache, must-revalidate"
     assert client.get("/static/app.js?v=test").headers["cache-control"] == "no-cache, must-revalidate"
     html = client.get("/").text
-    assert "transaction-reconcile-1" in html
+    assert "simplified-device-flow-1" in html

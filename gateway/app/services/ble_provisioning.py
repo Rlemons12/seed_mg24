@@ -12,7 +12,7 @@ class BleProvisioningError(ValueError):
 
 
 class BleNodeProvisioner:
-    """Bounded write-once onboarding over the production command characteristic."""
+    """Canonical bounded adapter for authoritative identity and device configuration."""
 
     FILTERS = {"none": 0, "moving_average": 1, "ema": 2, "median": 3}
 
@@ -80,6 +80,67 @@ class BleNodeProvisioner:
                 self._provision(address, node_id, transaction_id, configuration), timeout=self.timeout_seconds
             )
 
+    async def configure(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
+        """Atomically replace the one device-level persisted processing configuration."""
+        if not re.fullmatch(r"[0-9a-f]{16,24}", transaction_id):
+            raise BleProvisioningError("transaction_id is invalid")
+        transaction_id = transaction_id.upper()
+        values = self._configuration_values(configuration)
+        command = f"CFGSET 1 {transaction_id} " + " ".join(str(value) for value in values)
+        if len(command.encode("ascii")) > 191:
+            raise BleProvisioningError("configuration command exceeds firmware limit")
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        if lock.locked():
+            raise BleProvisioningError("another dashboard operation is already using this sensor")
+        async with lock:
+            return await asyncio.wait_for(
+                self._configure(address, node_id, transaction_id, command, values), timeout=self.timeout_seconds
+            )
+
+    async def _configure(self, address: str, node_id: str, transaction_id: str, command: str, values: tuple) -> dict:
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
+
+        def notification(_sender, data: bytearray) -> None:
+            try:
+                payload = json.loads(bytes(data).decode("utf-8"))
+                if payload.get("t") in {"ca", "ce"}:
+                    queue.put_nowait(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, asyncio.QueueFull):
+                return
+
+        async with self._client(address) as client:
+            await client.start_notify(TELEMETRY_UUID, notification)
+            await client.write_gatt_char(COMMAND_UUID, f"PROVGET 1 {transaction_id}".encode("ascii"), response=True)
+            before = await self._wait_for(queue, transaction_id, {"readback"})
+            if before.get("id") != node_id:
+                raise BleProvisioningError("authoritative identity changed; no configuration was written")
+            if self._readback_matches(before, values):
+                await client.stop_notify(TELEMETRY_UUID)
+                return {"acknowledgement": {"code": "already_applied", "tx": transaction_id}, "readback": before}
+            await client.write_gatt_char(COMMAND_UUID, command.encode("ascii"), response=True)
+            acknowledgement = await self._wait_for(queue, transaction_id, {"configured"})
+            await client.write_gatt_char(COMMAND_UUID, f"PROVGET 1 {transaction_id}".encode("ascii"), response=True)
+            readback = await self._wait_for(queue, transaction_id, {"readback"})
+            await client.stop_notify(TELEMETRY_UUID)
+        if not self._readback_matches(readback, values):
+            raise BleProvisioningError("device configuration readback does not match the requested values")
+        return {"acknowledgement": acknowledgement, "readback": readback}
+
+    def _configuration_values(self, configuration: dict) -> tuple:
+        filter_value = self.FILTERS.get(configuration["filter_type"])
+        if filter_value is None:
+            raise BleProvisioningError("unsupported filter type")
+        return (
+            configuration["sample_interval_ms"], configuration["processing_interval_ms"],
+            configuration["report_interval_ms"], configuration["heartbeat_interval_ms"],
+            filter_value, configuration["filter_window"], 1 if configuration.get("enabled", True) else 0,
+        )
+
+    @staticmethod
+    def _readback_matches(readback: dict, values: tuple) -> bool:
+        expected = dict(zip(("sample", "process", "report", "heartbeat", "filter", "window", "enabled"), values, strict=True))
+        return all(readback.get(key) == value for key, value in expected.items())
+
     async def _provision(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
 
@@ -91,18 +152,7 @@ class BleNodeProvisioner:
             except (UnicodeDecodeError, json.JSONDecodeError, asyncio.QueueFull):
                 return
 
-        filter_value = self.FILTERS.get(configuration["filter_type"])
-        if filter_value is None:
-            raise BleProvisioningError("unsupported filter type")
-        values = (
-            configuration["sample_interval_ms"],
-            configuration["processing_interval_ms"],
-            configuration["report_interval_ms"],
-            configuration["heartbeat_interval_ms"],
-            filter_value,
-            configuration["filter_window"],
-            1,
-        )
+        values = self._configuration_values(configuration)
         command = f"PROV 1 {transaction_id} {node_id} " + " ".join(str(value) for value in values)
         if len(command.encode("ascii")) > 191:
             raise BleProvisioningError("provisioning command exceeds firmware limit")

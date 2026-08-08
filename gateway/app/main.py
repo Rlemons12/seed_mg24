@@ -19,6 +19,7 @@ from gateway.app.database import (
     initialize_database,
     session_dependency,
 )
+from gateway.app.instance_lock import GatewayInstanceLock
 from gateway.app.logging_config import configure_logging
 from gateway.app.models import utc_now
 from gateway.app.profiles.registry import ProfileRegistry
@@ -55,6 +56,9 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        instance_lock = GatewayInstanceLock(settings.database_url, settings.port)
+        if settings.gateway_instance_lock:
+            instance_lock.acquire()
         async def status_callback(device_id: str, state: str, error: str | None) -> None:
             with session_factory() as session:
                 repository = DeviceRepository(session)
@@ -89,9 +93,13 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             for device in DeviceRepository(session).list():
                 if device.enabled and device.ble_address:
                     manager.schedule(device.device_id, device.ble_address)
-        yield
-        await manager.shutdown()
-        engine.dispose()
+        try:
+            yield
+        finally:
+            await manager.shutdown()
+            engine.dispose()
+            if settings.gateway_instance_lock:
+                instance_lock.release()
 
     app = FastAPI(title="Seed MG24 Gateway", version=__version__, lifespan=lifespan)
 
@@ -107,6 +115,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.websocket_manager = websocket_manager
     app.state.profile_registry = profile_registry
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
+    app.state.device_configuration_results = {}
     configurator = (
         BlePersistentConfigurator(session_factory, app.state.node_provisioner, lambda: app.state.ble_manager)
         if client_factory is None

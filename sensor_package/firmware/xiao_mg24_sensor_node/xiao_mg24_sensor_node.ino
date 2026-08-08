@@ -54,6 +54,9 @@ bool ble_enabled = BLE_SUPPORTED;
 bool ble_connected = false;
 bool ble_notify_enabled = false;
 volatile bool ble_command_pending = false;
+volatile bool ble_system_booted = false;
+bool application_setup_complete = false;
+bool ble_database_initialized = false;
 char pending_ble_command[192] = {};
 #if BLE_SUPPORTED
 uint8_t ble_connection_handle = 0xff;
@@ -124,6 +127,7 @@ void ble_start_advertising();
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
 void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
 bool ble_send_payload(const char* payload);
+void ble_initialize_when_ready();
 #endif
 
 bool parse_bounded_uint(const String& text, uint32_t minimum, uint32_t maximum, uint32_t* output) {
@@ -282,6 +286,56 @@ bool handle_provision_command(const String& command) {
   }
 #endif
   report_provisioning_state(transaction_id.c_str(), "provisioned");
+  return true;
+}
+
+bool handle_configuration_transaction(const String& command) {
+  // Atomic device-level persistent configuration. Permanent node identity is never changed here.
+  if (!command.startsWith("CFGSET ")) return false;
+  int offset = 7;
+  String version, transaction_id, sample, process, report, heartbeat, filter, window, enabled;
+  if (!next_command_token(command, &offset, &version) || !next_command_token(command, &offset, &transaction_id) ||
+      !next_command_token(command, &offset, &sample) || !next_command_token(command, &offset, &process) ||
+      !next_command_token(command, &offset, &report) || !next_command_token(command, &offset, &heartbeat) ||
+      !next_command_token(command, &offset, &filter) || !next_command_token(command, &offset, &window) ||
+      !next_command_token(command, &offset, &enabled) || offset <= (int)command.length() || version != "1" ||
+      transaction_id.length() < 8 || transaction_id.length() > 24) {
+    command_result(false, "invalid_configuration_header"); return true;
+  }
+  NodeIdentity existing = {};
+  StoreStatus existing_status = node_identity_store.load(&existing);
+  if (existing_status != StoreStatus::Ok && existing_status != StoreStatus::RecoveredFromPrevious) {
+    command_result(false, "identity_unassigned"); return true;
+  }
+  uint32_t sample_value, process_value, report_value, heartbeat_value, filter_value, window_value, enabled_value;
+  if (!parse_bounded_uint(sample, 50, 5000, &sample_value) ||
+      !parse_bounded_uint(process, 50, 5000, &process_value) ||
+      !parse_bounded_uint(report, 50, 5000, &report_value) ||
+      !parse_bounded_uint(heartbeat, 1000, 3600000, &heartbeat_value) ||
+      !parse_bounded_uint(filter, 0, 3, &filter_value) ||
+      !parse_bounded_uint(window, 1, MAX_FILTER_WINDOW, &window_value) ||
+      !parse_bounded_uint(enabled, 0, 1, &enabled_value)) {
+    command_result(false, "invalid_configuration"); return true;
+  }
+  StoredChannelConfiguration staged = {};
+  staged.sample_interval_ms = sample_value; staged.processing_interval_ms = process_value;
+  staged.report_interval_ms = report_value; staged.heartbeat_interval_ms = heartbeat_value;
+  staged.filter_type = (uint8_t)filter_value; staged.filter_window = (uint8_t)window_value;
+  staged.enabled = (uint8_t)enabled_value;
+  StoredChannelConfiguration verified = {};
+  StoreStatus stored = runtime_configuration_store.write(staged, &verified);
+  if (stored != StoreStatus::Ok) { command_result(false, store_status_name(stored)); return true; }
+  microphone_runtime_config.sample_interval_ms = verified.sample_interval_ms;
+  microphone_runtime_config.processing_interval_ms = verified.processing_interval_ms;
+  microphone_runtime_config.report_interval_ms = verified.report_interval_ms;
+  microphone_runtime_config.heartbeat_interval_ms = verified.heartbeat_interval_ms;
+  microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
+  microphone_runtime_config.filter_window = verified.filter_window;
+  microphone_runtime_config.enabled = verified.enabled != 0;
+  sample_interval_ms = verified.report_interval_ms;
+  microphone_channel.reconfigure(&microphone_runtime_config);
+  report_provisioning_state(transaction_id.c_str(), "configured");
+  return true;
 }
 
 bool handle_config_command(const String& command) {
@@ -326,6 +380,7 @@ void handle_command(String command) {
   command.toUpperCase();
 
   if (handle_provision_command(command)) return;
+  if (handle_configuration_transaction(command)) return;
 
   if (command == "CFGGET 1 MICROPHONE_RAW") {
     report_runtime_configuration();
@@ -517,14 +572,14 @@ void setup() {
   led_brightness = 0;
   update_led();
   Serial.println("{\"type\":\"hello\",\"board\":\"Seeed Studio XIAO MG24 Sense\",\"baud\":115200}");
+  application_setup_complete = true;
 }
 
 #if BLE_SUPPORTED
 void sl_bt_on_event(sl_bt_msg_t *evt) {
   switch (SL_BT_MSG_ID(evt->header)) {
     case sl_bt_evt_system_boot_id:
-      ble_initialize_gatt_db();
-      ble_start_advertising();
+      ble_system_booted = true;
       break;
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
@@ -534,7 +589,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       ble_connection_handle = 0xff;
       ble_connected = false;
       ble_notify_enabled = false;
-      ble_start_advertising();
+      if (ble_database_initialized) ble_start_advertising();
       break;
     case sl_bt_evt_gatt_server_characteristic_status_id:
       if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_telemetry_characteristic_handle) {
@@ -648,6 +703,13 @@ void ble_initialize_gatt_db() {
                              (const uint8_t*)capabilities_json, strlen(capabilities_json));
   ble_write_attribute_chunks(ble_metadata_characteristic_handle,
                              (const uint8_t*)metadata_json, strlen(metadata_json));
+  ble_database_initialized = true;
+}
+
+void ble_initialize_when_ready() {
+  if (!application_setup_complete || !ble_system_booted || ble_database_initialized) return;
+  ble_initialize_gatt_db();
+  ble_start_advertising();
 }
 
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length) {
@@ -726,6 +788,9 @@ bool ble_send_payload(const char* payload) {
 #endif
 
 void loop() {
+#if BLE_SUPPORTED
+  ble_initialize_when_ready();
+#endif
 #if BLE_SUPPORTED
   if (ble_command_pending) {
     char command[sizeof(pending_ble_command)];

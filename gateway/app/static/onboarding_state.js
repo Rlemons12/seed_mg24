@@ -20,6 +20,7 @@
 
   function transition(item = null, phase = "pending", operationActive = false) {
     const base = {
+      state: item ? "checking_identity" : "idle",
       selectedDiscovery: null,
       nodeId: "",
       displayName: "",
@@ -28,23 +29,31 @@
       showProvisioningFields: false,
       showRecovery: false,
       status: "Checking assignment state…",
-      action: "none",
+      action: "none", primaryAction: null, writesPermitted: false,
     };
-    if (phase === "pending" || !item) return base;
+    if (!item) return { ...base, status: "Scan for a nearby sensor or supported USB board." };
+    if (phase === "pending") return base;
     if (commissioningEligible(item, true, operationActive) && item.action === "commission") {
-      return { ...base, selectedDiscovery: item, canProvision: true, showProvisioningFields: true,
-        status: "Unassigned MG24 confirmed by device readback. Enter a new permanent identity.", action: "commission" };
+      return { ...base, state: operationActive ? "connecting" : "unassigned", selectedDiscovery: item,
+        canProvision: !operationActive, showProvisioningFields: !operationActive, writesPermitted: !operationActive,
+        status: "Unassigned sensor confirmed. Give it a name to finish setup.", action: "commission",
+        primaryAction: operationActive ? null : "Set up sensor" };
     }
     if (item.commissioning_state === "registered_here") {
-      return { ...base, status: `Already registered here as ${item.reported_node_id}.`,
-        action: "view_or_reconnect" };
+      return { ...base, state: "assigned_local", selectedDiscovery: item,
+        status: `Already registered here as ${item.reported_node_id}.`,
+        action: "view_or_reconnect", primaryAction: "Open Sensor" };
     }
     if (item.commissioning_state === "assigned_elsewhere") {
-      return { ...base, showRecovery: true, status: `Already assigned as ${item.reported_node_id}.`,
-        action: "recovery_or_import" };
+      return { ...base, state: "assigned_external", showRecovery: true,
+        status: `Already assigned as ${item.reported_node_id}.`, selectedDiscovery: item,
+        action: "import", primaryAction: "Import Sensor" };
     }
-    return { ...base, showRecovery: true, status: item.message || "Assignment state is unavailable; rescan before continuing.",
-      action: item.action || "retry_scan" };
+    if (item.commissioning_state === "incompatible") return { ...base, state: "blocked_error", showRecovery: true,
+      status: item.message || "This device is incompatible.", action: "diagnose", primaryAction: "View reason" };
+    return { ...base, state: "recoverable_error", showRecovery: true,
+      status: item.message || "The sensor state could not be checked. Nothing was changed.",
+      action: "retry_scan", primaryAction: "Scan again" };
   }
 
   return { commissioningEligible, transition };

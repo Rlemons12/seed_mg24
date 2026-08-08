@@ -94,6 +94,13 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         engine.dispose()
 
     app = FastAPI(title="Seed MG24 Gateway", version=__version__, lifespan=lifespan)
+
+    @app.middleware("http")
+    async def prevent_stale_dashboard_assets(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
     app.state.version = __version__
     app.state.settings = settings
     app.state.session_factory = session_factory

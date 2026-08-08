@@ -33,30 +33,37 @@ async def commissioning_discoveries(request: Request) -> list[dict]:
     for discovery in request.app.state.scanner.discoveries():
         item = discovery.model_dump(mode="json")
         if not discovery.compatible:
-            item.update({"commissioning_state": "incompatible", "action": "diagnose"})
+            item.update({"commissioning_state": "incompatible", "action": "diagnose",
+                         "commissioning_eligible": False, "allowed_actions": ["diagnose", "rescan", "close"]})
             results.append(item)
             continue
         with request.app.state.session_factory() as session:
             local = DeviceRepository(session).get_by_ble_address(discovery.address)
         if local is not None:
             item.update({"stable_device_id": local.device_id, "temporary_id": None,
-                         "reported_node_id": local.device_id, "commissioning_state": "registered_here",
-                         "action": "view_or_reconnect", "local_device_id": local.device_id})
+                         "reported_node_id": local.device_id, "assigned_node_id": local.device_id,
+                         "commissioning_state": "registered_here", "commissioning_eligible": False,
+                         "action": "view_or_reconnect", "allowed_actions": ["view", "reconnect", "rescan", "close"],
+                         "local_device_id": local.device_id})
             results.append(item)
             continue
         try:
             state = await request.app.state.node_provisioner.read_state(discovery.address)
             assigned_id = state["readback"]["id"]
         except (BleProvisioningError, TimeoutError, ConnectionError) as exc:
-            item.update({"commissioning_state": "state_unavailable", "action": "retry_scan", "message": str(exc)})
+            item.update({"commissioning_state": "state_unavailable", "commissioning_eligible": False,
+                         "action": "retry_scan", "allowed_actions": ["rescan", "close"], "message": str(exc)})
             results.append(item)
             continue
         item["reported_node_id"] = assigned_id
         if assigned_id == "UNASSIGNED-MG24":
-            item.update({"commissioning_state": "unassigned", "action": "commission"})
+            item.update({"commissioning_state": "unassigned", "commissioning_eligible": True,
+                         "action": "commission", "allowed_actions": ["commission", "rescan", "close"]})
         else:
             item.update({"stable_device_id": assigned_id, "temporary_id": None,
-                         "commissioning_state": "assigned_elsewhere", "action": "recovery_or_import",
+                         "assigned_node_id": assigned_id, "commissioning_state": "assigned_elsewhere",
+                         "commissioning_eligible": False, "action": "recovery_or_import",
+                         "allowed_actions": ["view_assignment", "recovery_instructions", "rescan", "close"],
                          "message": assigned_conflict(assigned_id)["message"]})
         results.append(item)
     return results
@@ -71,7 +78,12 @@ async def commission_node(body: CommissionNodeRequest, request: Request) -> Devi
         repository = DeviceRepository(session)
         local_by_address = repository.get_by_ble_address(body.discovery_address)
         if local_by_address is not None:
-            return DeviceResponse.model_validate(local_by_address)
+            raise HTTPException(status_code=409, detail={
+                "code": "device_already_registered",
+                "message": f"This MG24 is already registered here as {local_by_address.device_id}.",
+                "assigned_node_id": local_by_address.device_id,
+                "action": "view_or_reconnect",
+            })
         existing = repository.get(body.node_id)
         if existing is not None:
             if existing.ble_address == body.discovery_address:

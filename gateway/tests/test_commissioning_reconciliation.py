@@ -1,3 +1,5 @@
+import json
+import subprocess
 from pathlib import Path
 
 CONFIGURATION = {
@@ -29,6 +31,17 @@ class AssignedProvisioner:
         raise AssertionError("assigned devices must not enter provisioning")
 
 
+class UnassignedProvisioner(AssignedProvisioner):
+    def __init__(self):
+        super().__init__("UNASSIGNED-MG24")
+
+    async def provision(self, _address, node_id, _transaction_id, _configuration):
+        self.provision_calls += 1
+        return {"metadata": {"firmware_version": "0.1.0", "sensor_package_version": "0.1.0",
+                             "protocol_version": "1.0.0", "configuration_schema_version": 1},
+                "readback": {"id": node_id}}
+
+
 def request_body(node_id="MG24-0001"):
     return {
         "discovery_address": "AA:BB:CC:DD:EE:01",
@@ -46,8 +59,10 @@ def test_assigned_device_is_reconciled_and_not_offered_for_commissioning(client,
     discoveries = client.get("/api/commissioning/discoveries").json()
     assert discoveries[0]["commissioning_state"] == "assigned_elsewhere"
     assert discoveries[0]["reported_node_id"] == "MG24-0002"
+    assert discoveries[0]["assigned_node_id"] == "MG24-0002"
     assert discoveries[0]["temporary_id"] is None
     assert discoveries[0]["action"] == "recovery_or_import"
+    assert discoveries[0]["commissioning_eligible"] is False
 
     response = client.post("/api/commissioning/nodes", json=request_body())
     assert response.status_code == 409
@@ -79,8 +94,8 @@ def test_existing_local_device_routes_to_reconnect_without_duplicates(client, ap
     assert discovery["temporary_id"] is None
 
     response = client.post("/api/commissioning/nodes", json=request_body())
-    assert response.status_code == 200
-    assert response.json()["device_id"] == "MG24-0002"
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "device_already_registered"
     assert len(client.get("/api/devices").json()) == 1
     assert provisioner.provision_calls == 0
 
@@ -94,6 +109,51 @@ def test_dashboard_does_not_retry_conflict_and_explains_firmware_persistence():
     assert submit.count('api("/api/commissioning/nodes"') == 1
     assert "while" not in submit
     assert "/api/commissioning/discoveries" in script
-    assert script.count("Reconnect / View Sensor") >= 2
+    assert "Reconnect / View Sensor" in script
     assert "Existing identity and configuration were preserved" in script
     assert "Reinstalling application firmware preserves" in template
+    assert 'id="new-node-fields" class="hidden"' in template
+    assert 'id="provision-node-button" class="primary" disabled' in template
+    assert "Explicitly allow an unconfirmed device" not in template
+
+
+def test_actual_client_state_reducer_is_fail_closed_and_clears_stale_values():
+    module = Path("gateway/app/static/onboarding_state.js").resolve()
+    script = f"""
+const m = require({json.dumps(str(module))});
+console.log(JSON.stringify([
+  m.transition(),
+  m.transition({{
+    commissioning_state: 'assigned_elsewhere',
+    action: 'recovery_or_import',
+    reported_node_id: 'MG24-0002'
+  }}, 'classified'),
+  m.transition({{commissioning_state: 'unassigned', action: 'commission'}}, 'classified')
+]));
+"""
+    pending, assigned, unassigned = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert pending["canProvision"] is False and pending["selectedDiscovery"] is None
+    assert assigned["status"] == "Already assigned as MG24-0002."
+    assert assigned["canProvision"] is False and assigned["showRecovery"] is True
+    assert assigned["nodeId"] == assigned["displayName"] == assigned["location"] == ""
+    assert unassigned["canProvision"] is True and unassigned["showProvisioningFields"] is True
+
+
+def test_genuinely_unassigned_device_still_commissions_after_authoritative_readback(client, app, compatible_discovery):
+    provisioner = UnassignedProvisioner()
+    app.state.node_provisioner = provisioner
+    discovery = client.get("/api/commissioning/discoveries").json()[0]
+    assert discovery["commissioning_state"] == "unassigned"
+    assert discovery["commissioning_eligible"] is True
+    response = client.post("/api/commissioning/nodes", json=request_body("MG24-0003"))
+    assert response.status_code == 200
+    assert response.json()["device_id"] == "MG24-0003"
+    assert provisioner.provision_calls == 1
+    assert len(client.get("/api/devices").json()) == 1
+
+
+def test_dashboard_assets_are_revalidated_on_refresh(client):
+    assert client.get("/").headers["cache-control"] == "no-cache, must-revalidate"
+    assert client.get("/static/app.js?v=test").headers["cache-control"] == "no-cache, must-revalidate"
+    html = client.get("/").text
+    assert "assignment-reconcile-2" in html

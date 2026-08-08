@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { nodes: [], installations: [], profiles: [], interfaces: [], selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, draftId: null, commissioningActive: false };
+const state = { nodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, draftId: null, commissioningActive: false };
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -50,12 +50,20 @@ function updateCommissioningSubmit() {
 
 async function refresh() {
   [state.nodes, state.installations, state.profiles] = await Promise.all([api("/api/nodes"), api("/api/sensor-installations"), api("/api/sensor-profiles")]);
+  const readings = await Promise.all(state.nodes.map(async(node)=>{
+    try { return [node.node_id, await api(`/api/devices/${encodeURIComponent(node.node_id)}/readings/latest`)]; }
+    catch (_) { return [node.node_id, []]; }
+  }));
+  state.readings = Object.fromEntries(readings);
   renderNodes(); renderInstallations();
 }
 
+function inputName(channel) { return channel.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
+function readingText(reading) { const value=reading.normalized_value ?? reading.raw_value; const shown=typeof value==="number" ? Number(value.toFixed(3)) : value; return `${shown ?? "Unavailable"} ${reading.unit || ""}`.trim(); }
+
 function renderNodes() {
   const list = $("node-list"); list.replaceChildren();
-  state.nodes.forEach((node) => { const card = el("article", undefined, "device-card"); card.append(el("h3", node.display_name), el("div", node.node_id, "equipment-id"), el("p", node.connection_status, `state ${node.connection_status}`)); const dl = el("dl"); [["BLE name",node.ble_advertised_name || "Unknown"],["Address",node.ble_address || "Unknown"],["Firmware",node.firmware_version || "Unknown"],["Sensor package",node.sensor_package_version || "Not reported"],["Protocol",node.protocol_version || "Not reported"],["Compatibility",node.compatibility_status || "unknown"]].forEach(([a,b])=>dl.append(el("dt",a),el("dd",b))); card.append(dl); if(node.compatibility_message) card.append(el("p",node.compatibility_message,node.compatibility_status === "compatible" ? "muted" : "warning")); const reconnect=el("button","Open Sensor"); reconnect.type="button"; reconnect.addEventListener("click",async()=>{try{await api(`/api/devices/${encodeURIComponent(node.node_id)}/connect`,{method:"POST"});notice(`Opened ${node.node_id}; live telemetry will reconnect automatically.`);await refresh();}catch(error){notice(error.message);}}); const configure=el("button","Configure"); configure.type="button"; configure.addEventListener("click",()=>openDeviceConfiguration(node).catch((error)=>notice(error.message))); card.append(reconnect,configure);list.append(card); });
+  state.nodes.forEach((node) => { const card = el("article", undefined, "device-card node-card"); card.append(el("h3", node.display_name), el("div", node.node_id, "equipment-id"), el("p", node.connection_status, `state ${node.connection_status}`)); const dl = el("dl"); [["BLE name",node.ble_advertised_name || "Unknown"],["Address",node.ble_address || "Unknown"],["Firmware",node.firmware_version || "Unknown"],["Sensor package",node.sensor_package_version || "Not reported"],["Protocol",node.protocol_version || "Not reported"],["Compatibility",node.compatibility_status || "unknown"]].forEach(([a,b])=>dl.append(el("dt",a),el("dd",b))); card.append(dl); if(node.compatibility_message) card.append(el("p",node.compatibility_message,node.compatibility_status === "compatible" ? "muted" : "warning")); card.append(el("h4","Live sensor inputs")); const inputGrid=el("div",undefined,"channel-grid live-input-grid"); const rows=state.readings[node.node_id] || []; rows.filter((row)=>!["buffer_utilization","dropped_record_count","processing_error_count","sensor_error_count","led_brightness"].includes(row.channel)).forEach((row)=>{ const input=el("div",undefined,"channel"); input.append(el("strong",inputName(row.channel)),el("div",readingText(row)),el("span",`Quality: ${row.quality}; updated ${time(row.received_at)}`)); inputGrid.append(input); }); if(!inputGrid.children.length)inputGrid.append(el("p",node.connection_status==="connected" ? "Waiting for the first sensor reading…" : "Connect this sensor to load live readings.","muted")); card.append(inputGrid); const reconnect=el("button","Open Sensor"); reconnect.type="button"; reconnect.addEventListener("click",async()=>{try{await api(`/api/devices/${encodeURIComponent(node.node_id)}/connect`,{method:"POST"});notice(`Opened ${node.node_id}; live telemetry will reconnect automatically.`);await refresh();}catch(error){notice(error.message);}}); const configure=el("button","Configure"); configure.type="button"; configure.addEventListener("click",()=>openDeviceConfiguration(node).catch((error)=>notice(error.message))); card.append(reconnect,configure);list.append(card); });
   if (!state.nodes.length) list.append(el("p", "No MG24 nodes are registered.", "muted"));
 }
 
@@ -64,7 +72,7 @@ async function openDeviceConfiguration(node) { state.selectedConfigNode=node.nod
 function renderInstallations() {
   const list = $("installation-list"); list.replaceChildren();
   state.installations.forEach((item) => { const profile = state.profiles.find((p)=>p.profile_id===item.sensor_profile_id && p.profile_version===item.sensor_profile_version); const card=el("article",undefined,"device-card"); card.append(el("h3",item.display_name),el("div",item.device_id,"equipment-id"),el("p",item.provisioning_state,`state ${item.provisioning_state === "active" ? "connected" : item.provisioning_state}`)); const dl=el("dl"); [["MG24 node",item.node_id],["Profile",profile ? profile.display_name : item.sensor_profile_id],["Version",item.sensor_profile_version],["Interface",item.interface_id],["Calibration",item.calibration_status],["Verification",item.verification_status],["Last valid",time(item.last_valid_reading_at)]].forEach(([a,b])=>dl.append(el("dt",a),el("dd",String(b)))); card.append(dl); const button=el("button","Open details"); button.addEventListener("click",()=>openDetail(item.installation_id)); card.append(button); list.append(card); });
-  if (!state.installations.length) list.append(el("p", "No attached sensors have been installed.", "muted"));
+  if (!state.installations.length) list.append(el("p", "No optional equipment deployments have been created. The MG24 built-in sensors and live readings are shown below.", "muted"));
 }
 
 async function openDetail(id) {
@@ -125,5 +133,7 @@ document.querySelector('[data-action="validate-installation"]').addEventListener
 document.querySelector('[data-action="retry-installation"]').addEventListener("click",async()=>{try{await api(`/api/sensor-installations/${encodeURIComponent(state.selectedInstallation)}/apply`,{method:"POST"});await refresh();await openDetail(state.selectedInstallation);}catch(error){notice(error.message);}});
 document.querySelector('[data-action="disable-installation"]').addEventListener("click",async()=>{try{await api(`/api/sensor-installations/${encodeURIComponent(state.selectedInstallation)}/disable`,{method:"POST"});await refresh();await openDetail(state.selectedInstallation);}catch(error){notice(error.message);}});
 
-function websocket() { const protocol=location.protocol==="https:"?"wss":"ws"; const socket=new WebSocket(`${protocol}://${location.host}/ws/telemetry`); socket.addEventListener("open",()=>{$("gateway-status").textContent="Live";socket.send("ready");}); socket.addEventListener("message",()=>refresh().catch(()=>{})); socket.addEventListener("close",()=>{$("gateway-status").textContent="Reconnecting...";setTimeout(websocket,2000);}); }
+let refreshTimer=null;
+function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refresh().catch(()=>{});},500); }
+function websocket() { const protocol=location.protocol==="https:"?"wss":"ws"; const socket=new WebSocket(`${protocol}://${location.host}/ws/telemetry`); socket.addEventListener("open",()=>{$("gateway-status").textContent="Live";socket.send("ready");}); socket.addEventListener("message",scheduleRefresh); socket.addEventListener("close",()=>{$("gateway-status").textContent="Reconnecting...";setTimeout(websocket,2000);}); }
 refresh().then(websocket).catch((error)=>{notice(error.message);$("gateway-status").textContent="Unavailable";});

@@ -4,10 +4,10 @@
 <body>
   <header><div><span class="eyebrow">LOCAL SENSOR NETWORK</span><h1>MG24 Monitor</h1></div><div id="gateway-status" class="status-chip">Connecting...</div></header>
   <main>
-    <section class="toolbar"><div><h2>Installed sensors</h2><p>Attached sensors and MG24 nodes have separate identities.</p></div><div class="actions"><button id="register-node-button">Register MG24 node</button><button id="add-button" class="primary">Add Sensor</button></div></section>
+    <section class="toolbar"><div><h2>Sensor deployments</h2><p>Optional equipment and location records for attached sensors. Built-in MG24 readings appear with each node below.</p></div><div class="actions"><button id="register-node-button" hidden>Add deployment details</button><button id="add-button" class="primary">Add Sensor</button></div></section>
     <div id="notice" role="status" aria-live="polite"></div>
     <section id="installation-list" class="device-grid" aria-live="polite"></section>
-    <section class="panel"><h2>MG24 nodes</h2><div id="node-list" class="device-grid"></div></section>
+    <section class="panel"><h2>MG24 sensors and live inputs</h2><p>Connected nodes show their latest built-in sensor readings directly.</p><div id="node-list" class="device-grid"></div></section>
     <section id="detail-panel" class="panel hidden"><div class="panel-header"><div><h2 id="detail-title"></h2><p id="detail-id" class="equipment-id"></p></div><button data-action="close-detail" class="quiet">Close</button></div><div id="detail-status"></div><form id="edit-form" class="form-grid"><label>Display name<input id="edit-name" required maxlength="160"></label><label>Location<input id="edit-location" maxlength="240"></label><label class="wide">Description<textarea id="edit-description" maxlength="1000"></textarea></label><div class="wide actions"><button class="primary">Save details</button><button type="button" data-action="validate-installation">Validate</button><button type="button" data-action="retry-installation">Retry provisioning</button><button type="button" data-action="disable-installation">Disable</button></div></form><h3>Live raw and normalized values</h3><div id="channel-list" class="channel-grid"></div><h3>Provisioning history</h3><div id="provisioning-history"></div></section>
   </main>
 
@@ -25,7 +25,7 @@
     <fieldset><legend>9. Verification</legend><p id="verification-result">Not applied.</p></fieldset>
   </form></dialog>
   <dialog id="device-config-dialog"><form id="device-config-form" method="dialog"><div class="panel-header"><div><span class="eyebrow">DEVICE CONFIGURATION</span><h2 id="device-config-title">Configure sensor</h2></div><button type="button" data-action="close-device-config" class="quiet">Close</button></div><p>These persisted settings control microphone processing and the device reporting cadence. IMU, battery, and analog inputs provide live telemetry but do not have separate persistent settings.</p><div class="form-grid"><label>Sample interval (ms)<input id="device-cfg-sample" type="number" min="50" max="5000" required></label><label>Processing interval (ms)<input id="device-cfg-processing" type="number" min="50" max="5000" required></label><label>Report interval (ms)<input id="device-cfg-report" type="number" min="50" max="5000" required></label><label>Heartbeat interval (ms)<input id="device-cfg-heartbeat" type="number" min="1000" max="3600000" required></label><label>Filter<select id="device-cfg-filter"><option value="none">None</option><option value="moving_average">Moving average</option><option value="ema">EMA</option><option value="median">Median</option></select></label><label>Filter window<input id="device-cfg-window" type="number" min="1" max="9" required></label></div><div id="device-config-summary" class="summary"></div><button id="device-config-apply" type="submit" class="primary">Apply once and verify</button></form></dialog>
-  <footer><small id="dashboard-build">Dashboard build: simplified-device-flow-1</small></footer>
-  <script src="/static/onboarding_state.js?v=simplified-device-flow-1" defer></script>
-  <script src="/static/app.js?v=simplified-device-flow-1" defer></script>
+  <footer><small id="dashboard-build">Dashboard build: live-inputs-1</small></footer>
+  <script src="/static/onboarding_state.js?v=live-inputs-1" defer></script>
+  <script src="/static/app.js?v=live-inputs-1" defer></script>
 </body></html>

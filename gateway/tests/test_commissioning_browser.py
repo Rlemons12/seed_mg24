@@ -44,7 +44,18 @@ def dashboard_page():
                 request.fulfill(path=STATIC / "onboarding_state.js", content_type="application/javascript")
             elif path.endswith("/static/app.js"):
                 request.fulfill(path=STATIC / "app.js", content_type="application/javascript")
-            elif path.endswith("/api/nodes") or path.endswith("/api/sensor-installations") or path.endswith("/api/sensor-profiles"):
+            elif path.endswith("/api/nodes"):
+                request.fulfill(status=200, content_type="application/json", body=json.dumps([{
+                    "node_id": "MG24-0002", "display_name": "XIAO MG24 Sense 01",
+                    "connection_status": "connected", "compatibility_status": "compatible",
+                    "firmware_version": "0.1.0", "protocol_version": "1.0.0",
+                }]))
+            elif path.endswith("/api/devices/MG24-0002/readings/latest"):
+                request.fulfill(status=200, content_type="application/json", body=json.dumps([{
+                    "channel": "acceleration_x", "normalized_value": 0.896, "unit": "g",
+                    "quality": "good", "received_at": "2026-08-08T20:02:20Z",
+                }]))
+            elif path.endswith("/api/sensor-installations") or path.endswith("/api/sensor-profiles"):
                 request.fulfill(status=200, content_type="application/json", body="[]")
             elif path.endswith("/preview"):
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({"channels": []}))
@@ -57,7 +68,7 @@ def dashboard_page():
 
         page.route("**/*", route)
         page.goto("http://dashboard.test/")
-        page.click("#register-node-button")
+        page.click("#add-button")
         yield page, posts
         browser.close()
 
@@ -99,6 +110,15 @@ def test_ineligible_rendered_states_have_no_action_or_submission(dashboard_page,
     page, posts = dashboard_page
     render(page, item, phase)
     assert_no_commissioning_action(page, posts)
+
+
+def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_message(dashboard_page):
+    page, _posts = dashboard_page
+    assert page.get_by_text("Acceleration X", exact=True).is_visible()
+    assert page.get_by_text("0.896 g", exact=True).is_visible()
+    assert page.get_by_text("Quality: good", exact=False).is_visible()
+    assert page.get_by_text("No optional equipment deployments", exact=False).is_visible()
+    assert page.get_by_text("No attached sensors have been installed.", exact=True).count() == 0
 
 
 def test_authoritative_assignment_clears_stale_unassigned_action(dashboard_page):

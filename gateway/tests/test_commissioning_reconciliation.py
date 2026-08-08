@@ -209,4 +209,6 @@ def test_dashboard_assets_are_revalidated_on_refresh(client):
     assert client.get("/").headers["cache-control"] == "no-cache, must-revalidate"
     assert client.get("/static/app.js?v=test").headers["cache-control"] == "no-cache, must-revalidate"
     html = client.get("/").text
-    assert "simplified-device-flow-1" in html
+    assert "live-inputs-1" in html
+    script = Path("gateway/app/static/app.js").read_text(encoding="utf-8")
+    assert 'socket.addEventListener("message",scheduleRefresh)' in script

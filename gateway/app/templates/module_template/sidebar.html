@@ -1,0 +1,37 @@
+<aside id="shell-sidebar" class="mg-shell__sidebar" aria-label="Gateway modules">
+  <div class="mg-shell__brand">
+    <span class="mg-shell__brand-mark" aria-hidden="true">S</span>
+    <div><strong>Seed Gateway</strong><span>MG24 operations</span></div>
+  </div>
+  <nav class="mg-shell__nav" aria-label="Primary navigation">
+    <a class="mg-shell__nav-link is-active" href="#overview" data-module-target="overview" aria-current="page">
+      <span aria-hidden="true">◫</span><span>Overview</span>
+    </a>
+    <a class="mg-shell__nav-link" href="#devices" data-module-target="devices">
+      <span aria-hidden="true">◉</span><span>Devices</span>
+    </a>
+    <button class="mg-shell__nav-link" type="button" data-shell-action="add-sensor">
+      <span aria-hidden="true">＋</span><span>Add Sensor</span>
+    </button>
+    <a class="mg-shell__nav-link" href="#installations" data-module-target="installations">
+      <span aria-hidden="true">◇</span><span>Installations</span>
+    </a>
+    <button class="mg-shell__nav-link" type="button" data-shell-action="firmware">
+      <span aria-hidden="true">⇧</span><span>Firmware</span>
+    </button>
+    <a class="mg-shell__nav-link" href="#system-health" data-module-target="system-health">
+      <span aria-hidden="true">♡</span><span>System health</span>
+    </a>
+  </nav>
+  <div class="mg-shell__sidebar-footer">
+    <span class="mg-shell__label">Appearance</span>
+    <label class="mg-shell__theme-control">
+      <span class="mg-shell__sr-only">Color theme</span>
+      <select id="shell-theme-select">
+        <option value="gateway">Gateway light</option>
+        <option value="gateway-dark">Gateway dark</option>
+      </select>
+    </label>
+    <p>Local dashboard · Protected operations</p>
+  </div>
+</aside>

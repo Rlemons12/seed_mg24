@@ -1,5 +1,10 @@
 # Raspberry Pi gateway 0.1.0
 
+The dashboard uses a reusable, responsive module shell for overview, devices,
+installations, firmware, and system-health surfaces. See
+[`docs/frontend-module-template.md`](docs/frontend-module-template.md) before
+adding a new page or navigation item.
+
 This component owns BLE discovery and connections, the node and attached-sensor registry, declarative profile import, provisioning, SQLite history, FastAPI, WebSockets, and the browser dashboard. It contains no Arduino source or firmware build logic.
 
 Install with `python -m pip install -r gateway/requirements.txt`, copy `.env.example` to `.env`, and run `python -m gateway`. The dashboard listens on the configured host/port (default `0.0.0.0:8000`). Use `sudo bash gateway/scripts/install_raspberry_pi.sh` for the systemd installation. The service needs membership in the `bluetooth` group and access to BlueZ D-Bus.

@@ -1,0 +1,11 @@
+.module-hero { display: flex; align-items: end; justify-content: space-between; gap: 1.5rem; padding: clamp(1.25rem, 3vw, 2.25rem); color: var(--mg-hero-text); background: linear-gradient(125deg, var(--mg-hero), var(--mg-hero-alt)); border-radius: var(--mg-radius-lg); box-shadow: var(--mg-shadow); }
+.module-hero h2 { margin: .3rem 0; font-size: clamp(1.7rem, 4vw, 2.6rem); }
+.module-hero p { max-width: 48rem; margin: 0; color: var(--mg-hero-muted); }
+.module-panel { scroll-margin-top: calc(var(--mg-topbar-height) + 1rem); }
+.module-panel__header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+.module-panel__header h2 { margin: .25rem 0; }
+.module-panel__header p { margin: 0; color: var(--mg-muted); }
+
+@media (max-width: 650px) {
+  .module-hero, .module-panel__header { align-items: stretch; flex-direction: column; }
+}

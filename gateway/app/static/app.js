@@ -64,8 +64,60 @@ function readingText(reading) { const value=reading.normalized_value ?? reading.
 function inputOrder(channel) { const primary=["acceleration_x","acceleration_y","acceleration_z","angular_velocity_x","angular_velocity_y","angular_velocity_z"]; const index=primary.indexOf(channel); if(index>=0)return index; if(channel.startsWith("analog_"))return 100+Number(channel.slice(7)); return 20; }
 
 function renderNodes() {
-  const list = $("node-list"); list.replaceChildren();
-  state.nodes.forEach((node) => { const card = el("article", undefined, "device-card node-card"); card.append(el("h3", node.display_name), el("div", node.node_id, "equipment-id"), el("p", node.connection_status, `state ${node.connection_status}`)); const dl = el("dl"); [["BLE name",node.ble_advertised_name || "Unknown"],["Address",node.ble_address || "Unknown"],["Firmware",node.firmware_version || "Unknown"],["Sensor package",node.sensor_package_version || "Not reported"],["Protocol",node.protocol_version || "Not reported"],["Compatibility",node.compatibility_status || "unknown"]].forEach(([a,b])=>dl.append(el("dt",a),el("dd",b))); card.append(dl); if(node.compatibility_message) card.append(el("p",node.compatibility_message,node.compatibility_status === "compatible" ? "muted" : "warning")); card.append(el("h4","Live sensor inputs")); const inputGrid=el("div",undefined,"channel-grid live-input-grid"); const rows=state.readings[node.node_id] || []; rows.filter((row)=>!["buffer_utilization","dropped_record_count","processing_error_count","sensor_error_count","led_brightness"].includes(row.channel)).sort((left,right)=>inputOrder(left.channel)-inputOrder(right.channel)||left.channel.localeCompare(right.channel)).forEach((row)=>{ const input=el("div",undefined,"channel"); input.dataset.channel=row.channel; input.append(el("strong",inputName(row.channel)),el("div",readingText(row)),el("span",`Quality: ${row.quality}; updated ${time(row.received_at)}`)); inputGrid.append(input); }); if(!inputGrid.children.length)inputGrid.append(el("p",node.connection_status==="connected" ? "Waiting for the first sensor reading…" : "Connect this sensor to load live readings.","muted")); card.append(inputGrid); const reconnect=el("button","Open Sensor"); reconnect.type="button"; reconnect.addEventListener("click",async()=>{try{await api(`/api/devices/${encodeURIComponent(node.node_id)}/connect`,{method:"POST"});notice(`Opened ${node.node_id}; live telemetry will reconnect automatically.`);await refresh();}catch(error){notice(error.message);}}); const configure=el("button","Configure"); configure.type="button"; configure.addEventListener("click",()=>openDeviceConfiguration(node).catch((error)=>notice(error.message))); card.append(reconnect,configure);list.append(card); });
+  const list = $("node-list");
+  const expandedNodeIds = MG24SensorDisclosure.expandedNodeIds(list);
+  list.replaceChildren();
+  state.nodes.forEach((node) => {
+    const card = el("article", undefined, "mg-module-sensor-card");
+    card.dataset.nodeId = node.node_id;
+    const heading = el("h3", undefined, "mg-module-sensor-card__heading");
+    const toggle = el("button", undefined, "mg-module-sensor-card__toggle");
+    const detailsId = MG24SensorDisclosure.detailsId(node.node_id);
+    const expanded = expandedNodeIds.has(node.node_id);
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    toggle.setAttribute("aria-controls", detailsId);
+    const chevron = el("span", "", "mg-module-sensor-card__chevron");
+    chevron.setAttribute("aria-hidden", "true");
+    toggle.append(el("span", node.display_name, "mg-module-sensor-card__name"), chevron);
+    heading.append(toggle);
+
+    const details = el("div", undefined, "mg-module-sensor-card__details");
+    details.id = detailsId;
+    details.hidden = !expanded;
+    details.append(el("div", node.node_id, "equipment-id"), el("p", node.connection_status, `state ${node.connection_status}`));
+    const dl = el("dl");
+    [["BLE name", node.ble_advertised_name || "Unknown"], ["BLE address", node.ble_address || "Unknown"],
+      ["Firmware", node.firmware_version || "Unknown"], ["Sensor package", node.sensor_package_version || "Not reported"],
+      ["Protocol", node.protocol_version || "Not reported"], ["Compatibility", node.compatibility_status || "unknown"]]
+      .forEach(([label, value]) => dl.append(el("dt", label), el("dd", value)));
+    details.append(dl);
+    if (node.compatibility_message) details.append(el("p", node.compatibility_message, node.compatibility_status === "compatible" ? "muted" : "warning"));
+    details.append(el("h4", "Live sensor inputs"));
+    const inputGrid = el("div", undefined, "channel-grid live-input-grid");
+    const rows = state.readings[node.node_id] || [];
+    rows.filter((row) => !["buffer_utilization", "dropped_record_count", "processing_error_count", "sensor_error_count", "led_brightness"].includes(row.channel))
+      .sort((left, right) => inputOrder(left.channel) - inputOrder(right.channel) || left.channel.localeCompare(right.channel))
+      .forEach((row) => {
+        const input = el("div", undefined, "channel");
+        input.dataset.channel = row.channel;
+        input.append(el("strong", inputName(row.channel)), el("div", readingText(row)), el("span", `Quality: ${row.quality}; updated ${time(row.received_at)}`));
+        inputGrid.append(input);
+      });
+    if (!inputGrid.children.length) inputGrid.append(el("p", node.connection_status === "connected" ? "Waiting for the first sensor reading…" : "Connect this sensor to load live readings.", "muted"));
+    details.append(inputGrid);
+    const actions = el("div", undefined, "actions");
+    const reconnect = el("button", "Open Sensor");
+    reconnect.type = "button";
+    reconnect.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/connect`, { method: "POST" }); notice(`Opened ${node.node_id}; live telemetry will reconnect automatically.`); await refresh(); } catch (error) { notice(error.message); } });
+    const configure = el("button", "Configure");
+    configure.type = "button";
+    configure.addEventListener("click", () => openDeviceConfiguration(node).catch((error) => notice(error.message)));
+    actions.append(reconnect, configure);
+    details.append(actions);
+    card.append(heading, details);
+    list.append(card);
+  });
   if (!state.nodes.length) list.append(el("p", "No MG24 nodes are registered.", "muted"));
 }
 

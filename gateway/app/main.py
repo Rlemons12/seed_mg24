@@ -4,8 +4,9 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from gateway import __version__
 from gateway.app.api import commands, commissioning, devices, firmware, health, installations, nodes, profiles, telemetry
@@ -34,6 +35,7 @@ from gateway.app.services.websocket_manager import WebSocketManager
 
 PACKAGE_DIR = Path(__file__).parent
 REPOSITORY_DIR = PACKAGE_DIR.parents[1]
+templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 
 
 def create_app(settings: Settings | None = None, *, client_factory=None, scanner_factory=None) -> FastAPI:
@@ -143,8 +145,12 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/", include_in_schema=False)
-    def dashboard() -> FileResponse:
-        return FileResponse(PACKAGE_DIR / "templates" / "index.html")
+    def dashboard(request: Request):
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={"dashboard_build": f"{__version__}-module-shell-1"},
+        )
 
     @app.exception_handler(HTTPException)
     async def structured_http_error(request: Request, exc: HTTPException):

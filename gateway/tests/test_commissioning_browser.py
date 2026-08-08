@@ -1,13 +1,24 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 playwright = pytest.importorskip("playwright.sync_api")
 
 ROOT = Path(__file__).parents[2]
 TEMPLATE = ROOT / "gateway/app/templates/index.html"
+TEMPLATES = TEMPLATE.parent
 STATIC = ROOT / "gateway/app/static"
+
+
+def rendered_dashboard() -> str:
+    environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape())
+    return environment.get_template("index.html").render(
+        dashboard_build="browser-test",
+        url_for=lambda _name, path: f"/static{path}",
+    )
 
 
 def chrome_path() -> Path:
@@ -38,8 +49,14 @@ def dashboard_page():
             if request.request.method == "POST" and path.endswith("/api/commissioning/nodes"):
                 posts.append(json.loads(request.request.post_data or "{}"))
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({"device_id": "MG24-TEST"}))
+            elif "/static/css/" in path:
+                relative = path.split("/static/", 1)[1]
+                request.fulfill(path=STATIC / relative, content_type="text/css")
             elif path.endswith("/static/styles.css"):
                 request.fulfill(path=STATIC / "styles.css", content_type="text/css")
+            elif "/static/js/" in path:
+                relative = path.split("/static/", 1)[1]
+                request.fulfill(path=STATIC / relative, content_type="application/javascript")
             elif path.endswith("/static/onboarding_state.js"):
                 request.fulfill(path=STATIC / "onboarding_state.js", content_type="application/javascript")
             elif path.endswith("/static/app.js"):
@@ -70,7 +87,7 @@ def dashboard_page():
             elif path.endswith("/history"):
                 request.fulfill(status=200, content_type="application/json", body="[]")
             elif path == "http://dashboard.test/":
-                request.fulfill(path=TEMPLATE, content_type="text/html")
+                request.fulfill(status=200, content_type="text/html", body=rendered_dashboard())
             else:
                 request.fulfill(status=404, body="")
 
@@ -122,6 +139,19 @@ def test_ineligible_rendered_states_have_no_action_or_submission(dashboard_page,
 
 def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_message(dashboard_page):
     page, _posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    toggle = page.locator(".mg-module-sensor-card__toggle")
+    details = page.locator(".mg-module-sensor-card__details")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert details.is_hidden()
+    assert page.get_by_text("XIAO MG24 Sense 01", exact=True).is_visible()
+    assert page.get_by_text("MG24-0002", exact=True).is_hidden()
+    assert page.get_by_role("button", name="Open Sensor").is_hidden()
+    assert page.get_by_role("button", name="Configure", exact=True).is_hidden()
+    card_width = page.locator(".mg-module-sensor-card").bounding_box()["width"]
+    list_width = page.locator("#node-list").bounding_box()["width"]
+    assert card_width <= 352 and card_width < list_width
+    toggle.click()
     assert page.get_by_text("Acceleration X", exact=True).is_visible()
     assert page.get_by_text("0.896 g (gravity)", exact=True).is_visible()
     assert page.get_by_text("0.28 °/s (degrees per second)", exact=True).is_visible()
@@ -133,6 +163,108 @@ def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_me
         "nodes => nodes.map(node => node.dataset.channel)"
     )
     assert channels == ["acceleration_x", "angular_velocity_x", "battery_voltage", "analog_0", "analog_1"]
+
+
+def test_sensor_disclosure_toggles_with_mouse_and_keyboard(dashboard_page):
+    page, posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    toggle = page.locator(".mg-module-sensor-card__toggle")
+    details = page.locator(".mg-module-sensor-card__details")
+    assert toggle.get_attribute("aria-controls") == details.get_attribute("id")
+    toggle.press("Enter")
+    assert toggle.get_attribute("aria-expanded") == "true" and details.is_visible()
+    assert toggle.evaluate("node => document.activeElement === node")
+    toggle.press("Space")
+    assert toggle.get_attribute("aria-expanded") == "false" and details.is_hidden()
+    assert toggle.evaluate("node => document.activeElement === node")
+    assert posts == []
+
+
+def test_multiple_sensor_disclosures_are_independent_and_unique(dashboard_page):
+    page, _posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    page.evaluate("""
+      state.nodes.push({...state.nodes[0], node_id: 'MG24-0003', display_name: 'Loading dock sensor'});
+      state.readings['MG24-0003'] = [];
+      renderNodes();
+    """)
+    toggles = page.locator(".mg-module-sensor-card__toggle")
+    details = page.locator(".mg-module-sensor-card__details")
+    cards = page.locator(".mg-module-sensor-card")
+    assert toggles.count() == details.count() == 2
+    assert len(set(details.evaluate_all("nodes => nodes.map(node => node.id)"))) == 2
+    collapsed_boxes = cards.evaluate_all(
+        "nodes => nodes.map(node => ({width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height}))"
+    )
+    assert {box["height"] for box in collapsed_boxes} == {56}
+    assert len({round(box["width"]) for box in collapsed_boxes}) == 1
+    toggles.nth(0).click()
+    assert toggles.nth(0).get_attribute("aria-expanded") == "true"
+    assert toggles.nth(1).get_attribute("aria-expanded") == "false"
+    assert details.nth(0).is_visible() and details.nth(1).is_hidden()
+    assert cards.nth(0).bounding_box()["width"] > collapsed_boxes[0]["width"]
+    assert cards.nth(1).bounding_box()["height"] == 56
+
+
+def test_collapsed_sensor_keeps_latest_telemetry_and_rerender_has_one_handler(dashboard_page):
+    page, _posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    toggle = page.locator(".mg-module-sensor-card__toggle")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    page.evaluate("""
+      state.readings['MG24-0002'][2].normalized_value = 0.777;
+      renderNodes(); renderNodes();
+    """)
+    toggle = page.locator(".mg-module-sensor-card__toggle")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    toggle.click()
+    assert page.get_by_text("0.777 g (gravity)", exact=True).is_visible()
+    assert toggle.get_attribute("aria-expanded") == "true"
+    page.evaluate("renderNodes()")
+    assert page.locator(".mg-module-sensor-card__toggle").get_attribute("aria-expanded") == "true"
+    page.locator(".mg-module-sensor-card__toggle").click()
+    assert page.locator(".mg-module-sensor-card__toggle").get_attribute("aria-expanded") == "false"
+
+
+def test_sensor_disclosure_mobile_and_reduced_motion(dashboard_page):
+    page, _posts = dashboard_page
+    page.set_viewport_size({"width": 390, "height": 844})
+    toggle = page.locator(".mg-module-sensor-card__toggle")
+    assert toggle.bounding_box()["width"] <= 390
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    page.emulate_media(reduced_motion="reduce")
+    duration = page.locator(".mg-module-sensor-card__chevron").evaluate(
+        "node => getComputedStyle(node).transitionDuration"
+    )
+    assert duration == "0s"
+
+
+def test_sensor_disclosure_visual_states(dashboard_page):
+    page, _posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    page.evaluate("""
+      state.nodes.push({...state.nodes[0], node_id: 'MG24-0003', display_name: 'Loading dock sensor'});
+      state.readings['MG24-0003'] = [];
+      renderNodes();
+    """)
+    output = os.getenv("MG24_VISUAL_OUTPUT")
+    if output:
+        destination = Path(output)
+        destination.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=destination / "desktop-light-collapsed.png", full_page=True)
+        page.locator(".mg-module-sensor-card__toggle").first.focus()
+        page.screenshot(path=destination / "desktop-light-keyboard-focus.png", full_page=True)
+        page.locator(".mg-module-sensor-card__toggle").first.click()
+        page.screenshot(path=destination / "desktop-light-expanded.png", full_page=True)
+        page.select_option("#shell-theme-select", "gateway-dark")
+        page.screenshot(path=destination / "desktop-dark-expanded.png", full_page=True)
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_timeout(250)
+        page.screenshot(path=destination / "mobile-dark-expanded.png", full_page=True)
+        page.locator(".mg-module-sensor-card__toggle").first.click()
+        page.screenshot(path=destination / "mobile-dark-collapsed.png", full_page=True)
+
+    assert page.locator(".mg-module-sensor-card").count() == 2
 
 
 def test_authoritative_assignment_clears_stale_unassigned_action(dashboard_page):
@@ -206,3 +338,16 @@ def test_failed_installation_does_not_offer_blind_retry(dashboard_page):
     page.wait_for_timeout(100)
     retry = page.locator('[data-action="retry-installation"]')
     assert retry.is_hidden() and retry.is_disabled()
+
+
+def test_shared_shell_navigation_and_theme_are_accessible(dashboard_page):
+    page, _posts = dashboard_page
+    page.locator("#node-dialog").evaluate("dialog => dialog.close()")
+    assert page.locator("#shell-sidebar").get_attribute("aria-label") == "Gateway modules"
+    assert page.locator(".mg-shell__skip-link").get_attribute("href") == "#module-content"
+    links = page.locator("[data-module-target]")
+    assert links.count() == 4
+    page.locator('[data-module-target="devices"]').click()
+    assert page.locator('[data-module-target="devices"]').get_attribute("aria-current") == "page"
+    page.select_option("#shell-theme-select", "gateway-dark")
+    assert page.locator("html").get_attribute("data-theme") == "gateway-dark"

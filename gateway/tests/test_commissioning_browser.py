@@ -123,7 +123,9 @@ def test_ineligible_rendered_states_have_no_action_or_submission(dashboard_page,
 def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_message(dashboard_page):
     page, _posts = dashboard_page
     assert page.get_by_text("Acceleration X", exact=True).is_visible()
-    assert page.get_by_text("0.896 g", exact=True).is_visible()
+    assert page.get_by_text("0.896 g (gravity)", exact=True).is_visible()
+    assert page.get_by_text("0.28 °/s (degrees per second)", exact=True).is_visible()
+    assert page.get_by_text("415 ADC counts", exact=True).is_visible()
     assert page.get_by_text("Quality: good", exact=False).first.is_visible()
     assert page.get_by_text("No optional equipment deployments", exact=False).is_visible()
     assert page.get_by_text("No attached sensors have been installed.", exact=True).count() == 0

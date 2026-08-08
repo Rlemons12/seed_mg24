@@ -59,7 +59,8 @@ async function refresh() {
 }
 
 function inputName(channel) { return channel.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
-function readingText(reading) { const value=reading.normalized_value ?? reading.raw_value; const shown=typeof value==="number" ? Number(value.toFixed(3)) : value; return `${shown ?? "Unavailable"} ${reading.unit || ""}`.trim(); }
+function unitLabel(unit) { return ({g:"g (gravity)",dps:"°/s (degrees per second)",V:"V (volts)",adc_count:"ADC counts",percent:"% (percent)",pwm_count:"PWM counts",count:"count"})[unit] || unit || "unit not reported"; }
+function readingText(reading) { const value=reading.normalized_value ?? reading.raw_value; const shown=typeof value==="number" ? Number(value.toFixed(3)) : value; return `${shown ?? "Unavailable"} ${unitLabel(reading.unit)}`; }
 function inputOrder(channel) { const primary=["acceleration_x","acceleration_y","acceleration_z","angular_velocity_x","angular_velocity_y","angular_velocity_z"]; const index=primary.indexOf(channel); if(index>=0)return index; if(channel.startsWith("analog_"))return 100+Number(channel.slice(7)); return 20; }
 
 function renderNodes() {

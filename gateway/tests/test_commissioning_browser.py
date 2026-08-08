@@ -15,9 +15,15 @@ STATIC = ROOT / "gateway/app/static"
 
 def rendered_dashboard() -> str:
     environment = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape())
+    def url_for(name, path=None):
+        if name == "static":
+            return f"/static{path}"
+        return {"dashboard": "/", "installations_page": "/installations", "system_health_page": "/system-health"}[name]
+
     return environment.get_template("index.html").render(
         dashboard_build="browser-test",
-        url_for=lambda _name, path: f"/static{path}",
+        current_module="overview",
+        url_for=url_for,
     )
 
 
@@ -137,7 +143,7 @@ def test_ineligible_rendered_states_have_no_action_or_submission(dashboard_page,
     assert_no_commissioning_action(page, posts)
 
 
-def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_message(dashboard_page):
+def test_connected_node_renders_live_sensor_inputs_in_disclosure(dashboard_page):
     page, _posts = dashboard_page
     page.locator("#node-dialog").evaluate("dialog => dialog.close()")
     toggle = page.locator(".mg-module-sensor-card__toggle")
@@ -157,8 +163,6 @@ def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_me
     assert page.get_by_text("0.28 °/s (degrees per second)", exact=True).is_visible()
     assert page.get_by_text("415 ADC counts", exact=True).is_visible()
     assert page.get_by_text("Quality: good", exact=False).first.is_visible()
-    assert page.get_by_text("No optional equipment deployments", exact=False).is_visible()
-    assert page.get_by_text("No attached sensors have been installed.", exact=True).count() == 0
     channels = page.locator(".live-input-grid .channel").evaluate_all(
         "nodes => nodes.map(node => node.dataset.channel)"
     )

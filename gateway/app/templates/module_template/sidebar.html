@@ -1,25 +1,25 @@
 <aside id="shell-sidebar" class="mg-shell__sidebar" aria-label="Gateway modules">
   <div class="mg-shell__brand">
     <span class="mg-shell__brand-mark" aria-hidden="true">S</span>
-    <div><strong>Seed Gateway</strong><span>MG24 operations</span></div>
+    <div><strong>Seed Gateway</strong><span>Sensor operations</span></div>
   </div>
   <nav class="mg-shell__nav" aria-label="Primary navigation">
-    <a class="mg-shell__nav-link is-active" href="#overview" data-module-target="overview" aria-current="page">
+    <a class="mg-shell__nav-link{% if current_module == 'overview' %} is-active{% endif %}" href="{{ url_for('dashboard') }}" data-module-target="overview"{% if current_module == 'overview' %} aria-current="page"{% endif %}>
       <span aria-hidden="true">◫</span><span>Overview</span>
     </a>
-    <a class="mg-shell__nav-link" href="#devices" data-module-target="devices">
+    <a class="mg-shell__nav-link" href="{{ url_for('dashboard') }}#devices" data-module-target="devices">
       <span aria-hidden="true">◉</span><span>Devices</span>
     </a>
-    <button class="mg-shell__nav-link" type="button" data-shell-action="add-sensor">
+    <a class="mg-shell__nav-link" href="{{ url_for('dashboard') }}?action=add-sensor" data-shell-action="add-sensor">
       <span aria-hidden="true">＋</span><span>Add Sensor</span>
-    </button>
-    <a class="mg-shell__nav-link" href="#installations" data-module-target="installations">
+    </a>
+    <a class="mg-shell__nav-link{% if current_module == 'installations' %} is-active{% endif %}" href="{{ url_for('installations_page') }}" data-module-target="installations"{% if current_module == 'installations' %} aria-current="page"{% endif %}>
       <span aria-hidden="true">◇</span><span>Installations</span>
     </a>
-    <button class="mg-shell__nav-link" type="button" data-shell-action="firmware">
+    <a class="mg-shell__nav-link" href="{{ url_for('dashboard') }}?action=firmware" data-shell-action="firmware">
       <span aria-hidden="true">⇧</span><span>Firmware</span>
-    </button>
-    <a class="mg-shell__nav-link" href="#system-health" data-module-target="system-health">
+    </a>
+    <a class="mg-shell__nav-link{% if current_module == 'system-health' %} is-active{% endif %}" href="{{ url_for('system_health_page') }}" data-module-target="system-health"{% if current_module == 'system-health' %} aria-current="page"{% endif %}>
       <span aria-hidden="true">♡</span><span>System health</span>
     </a>
   </nav>

@@ -103,7 +103,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             if settings.gateway_instance_lock:
                 instance_lock.release()
 
-    app = FastAPI(title="Seed MG24 Gateway", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="Seed Sensor Gateway", version=__version__, lifespan=lifespan)
 
     @app.middleware("http")
     async def prevent_stale_dashboard_assets(request: Request, call_next):
@@ -149,7 +149,23 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"dashboard_build": f"{__version__}-module-shell-1"},
+            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "overview"},
+        )
+
+    @app.get("/installations", include_in_schema=False)
+    def installations_page(request: Request):
+        return templates.TemplateResponse(
+            request=request,
+            name="installations.html",
+            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "installations"},
+        )
+
+    @app.get("/system-health", include_in_schema=False)
+    def system_health_page(request: Request):
+        return templates.TemplateResponse(
+            request=request,
+            name="system_health.html",
+            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "system-health"},
         )
 
     @app.exception_handler(HTTPException)

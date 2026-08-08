@@ -1,0 +1,18 @@
+{% extends "module_template/base.html" %}
+{% block title %}Installations · Seed Gateway{% endblock %}
+{% block module_title %}Installations{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ dashboard_build }}">{% endblock %}
+{% block content %}
+  <section class="module-hero module-hero--compact" aria-labelledby="installations-page-title">
+    <div><span class="eyebrow">INSTALLATIONS</span><h2 id="installations-page-title">Sensor deployments</h2><p>Equipment and location context attached to registered sensor inputs.</p></div>
+  </section>
+  <div id="installations-notice" role="status" aria-live="polite"></div>
+  <section class="panel module-panel" aria-labelledby="installation-list-title">
+    <div class="module-panel__header"><div><span class="eyebrow">DEPLOYMENTS</span><h2 id="installation-list-title">Installed sensors</h2><p>Open a deployment to review its identity, profile, interface, and verification state.</p></div><span id="installation-count" class="status-chip">Loading…</span></div>
+    <div id="installations-page-list" class="device-grid" aria-live="polite"></div>
+  </section>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/js/module_template/module_client.js') }}?v={{ dashboard_build }}" defer></script>
+  <script src="{{ url_for('static', path='/js/modules/installations.js') }}?v={{ dashboard_build }}" defer></script>
+{% endblock %}

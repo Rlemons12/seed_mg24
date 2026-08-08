@@ -9,7 +9,7 @@ def test_health(client):
 def test_dashboard_loads(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "MG24 Monitor" in response.text
+    assert "Sensor Monitoring" in response.text
 
 
 def test_register_update_and_duplicate(client, compatible_discovery):

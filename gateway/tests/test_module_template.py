@@ -17,6 +17,22 @@ def test_dashboard_uses_one_shared_module_shell():
     assert "href=\"/" not in sidebar
 
 
+def test_installations_and_system_health_are_separate_module_pages(client):
+    dashboard = client.get("/")
+    installations = client.get("/installations")
+    health = client.get("/system-health")
+
+    assert dashboard.status_code == installations.status_code == health.status_code == 200
+    assert 'id="installations-page-list"' not in dashboard.text
+    assert 'id="health-summary-title"' not in dashboard.text
+    assert 'id="installations-page-list"' in installations.text
+    assert 'data-module-target="installations" aria-current="page"' in installations.text
+    assert 'id="health-summary-title"' in health.text
+    assert 'data-module-target="system-health" aria-current="page"' in health.text
+    assert "/installations" in dashboard.text
+    assert "/system-health" in dashboard.text
+
+
 def test_module_styles_and_script_are_namespaced_and_bounded():
     base_css = (STATIC / "css" / "module_template" / "base.css").read_text(encoding="utf-8")
     module_css = (STATIC / "styles.css").read_text(encoding="utf-8")

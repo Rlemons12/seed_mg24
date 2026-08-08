@@ -38,12 +38,18 @@
     if (matchMedia("(max-width: 860px)").matches) setNavigation(false);
   });
 
-  document.querySelector('[data-shell-action="add-sensor"]')?.addEventListener("click", () => {
-    document.querySelector("#add-button")?.click();
+  document.querySelector('[data-shell-action="add-sensor"]')?.addEventListener("click", (event) => {
+    const action = document.querySelector("#add-button");
+    if (!action) return;
+    event.preventDefault();
+    action.click();
     if (matchMedia("(max-width: 860px)").matches) setNavigation(false);
   });
-  document.querySelector('[data-shell-action="firmware"]')?.addEventListener("click", () => {
-    document.querySelector("#add-button")?.click();
+  document.querySelector('[data-shell-action="firmware"]')?.addEventListener("click", (event) => {
+    const action = document.querySelector("#add-button");
+    if (!action) return;
+    event.preventDefault();
+    action.click();
     requestAnimationFrame(() => document.querySelector("#usb-detect-button")?.focus());
   });
 

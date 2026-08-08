@@ -4,6 +4,8 @@ The gateway dashboard uses one server-rendered application shell for every
 module. `templates/module_template/base.html` owns the document, responsive
 sidebar, top bar, status region, content landmark, footer, and shared assets.
 Individual pages extend that template and provide only their module content.
+The overview and physical-device grid live at `/`; installations and system
+health are separate modules at `/installations` and `/system-health`.
 
 ## Structure
 

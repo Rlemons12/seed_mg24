@@ -16,7 +16,17 @@ from gateway.app.services.node_capability_service import NodeCapabilityService
 
 
 class ProvisioningError(ValueError):
-    pass
+    def __init__(self, message: str, *, code: str = "configuration_error", transaction_id: str | None = None,
+                 device_state: str = "unchanged", retry_allowed: bool = False, next_action: str = "revalidate") -> None:
+        super().__init__(message)
+        self.detail = {
+            "code": code,
+            "message": message,
+            "transaction_id": transaction_id,
+            "device_state": device_state,
+            "retry_allowed": retry_allowed,
+            "next_action": next_action,
+        }
 
 
 class PiAuthoritativeConfigurator:
@@ -42,8 +52,12 @@ class BlePersistentConfigurator:
         self.manager_provider = manager_provider
         self._verified: dict[str, dict] = {}
 
+    @staticmethod
+    def supports_interface(interface_id: str) -> bool:
+        return interface_id == "MIC"
+
     async def apply(self, node_id: str, interface_id: str, transaction_id: str, configuration: dict) -> dict:
-        if interface_id != "MIC":
+        if not self.supports_interface(interface_id):
             raise ValueError("firmware persistence currently supports the built-in microphone interface")
         with self.session_factory() as session:
             device = DeviceRepository(session).get(node_id)
@@ -93,6 +107,13 @@ class SensorProvisioningService:
                     raise ProvisioningError("pinned sensor profile is unavailable")
                 capabilities = NodeCapabilityService(DeviceRepository(session)).get(installation.node_id)
                 DefaultChannelConfigurationService().validate(profile, capabilities, installation.interface_id, configuration)
+                supports = getattr(self.configurator, "supports_interface", None)
+                if supports is not None and not supports(installation.interface_id):
+                    raise ProvisioningError(
+                        f"firmware does not support persistent configuration for {installation.interface_id}",
+                        code="interface_configuration_unsupported",
+                        next_action="select_supported_interface",
+                    )
             except (ValueError, ProvisioningError) as exc:
                 repository.update(
                     installation,
@@ -101,7 +122,9 @@ class SensorProvisioningService:
                     provisioning_error=str(exc)[:500],
                     enabled=False,
                 )
-                raise ProvisioningError(str(exc)) from exc
+                if isinstance(exc, ProvisioningError):
+                    raise
+                raise ProvisioningError(str(exc), code="validation_failed") from exc
             return repository.update(installation, provisioning_state="ready_to_apply", provisioning_error=None)
 
     async def apply(self, installation_id: str):
@@ -131,7 +154,7 @@ class SensorProvisioningService:
                     existing = repository.get_attempt(installation.active_transaction_id)
                     if existing and existing.state in {"applying", "verifying", "active"}:
                         return installation
-                if installation.provisioning_state not in {"ready_to_apply", "failed", "draft"}:
+                if installation.provisioning_state != "ready_to_apply":
                     raise ProvisioningError(f"installation cannot be applied from {installation.provisioning_state}")
                 transaction_id = uuid4().hex
                 requested = json.loads(installation.configuration_json)
@@ -152,9 +175,26 @@ class SensorProvisioningService:
                 applied = await asyncio.wait_for(
                     self.configurator.apply(node_id, interface_id, transaction_id, requested), timeout=self.timeout_seconds
                 )
-            except (TimeoutError, ConnectionError, ValueError) as exc:
+            except TimeoutError as exc:
+                await self._uncertain(installation_id, transaction_id, "acknowledgement_timeout")
+                raise ProvisioningError(
+                    "The configuration acknowledgement was not received. Device state must be reconciled before retry.",
+                    code="acknowledgement_timeout", transaction_id=transaction_id,
+                    device_state="unknown", next_action="authoritative_readback",
+                ) from exc
+            except ConnectionError as exc:
+                await self._uncertain(installation_id, transaction_id, "transport_failure")
+                raise ProvisioningError(
+                    "The BLE transport failed. Device state must be reconciled before retry.",
+                    code="transport_failure", transaction_id=transaction_id,
+                    device_state="unknown", next_action="authoritative_readback",
+                ) from exc
+            except ValueError as exc:
                 await self._fail(installation_id, transaction_id, type(exc).__name__)
-                raise ProvisioningError("configuration acknowledgement failed") from exc
+                raise ProvisioningError(
+                    str(exc) or "The device rejected the configuration.", code="device_rejected",
+                    transaction_id=transaction_id, device_state="unchanged", next_action="revalidate",
+                ) from exc
             with self.session_factory() as session:
                 repository = InstallationRepository(session)
                 attempt = repository.get_attempt(transaction_id)
@@ -242,5 +282,34 @@ class SensorProvisioningService:
                         verification_status="failed",
                         provisioning_error=error,
                         active_transaction_id=None,
+                        enabled=False,
+                    )
+
+    async def _uncertain(self, installation_id: str, transaction_id: str, error: str) -> None:
+        with self.session_factory() as session:
+            repository = InstallationRepository(session)
+            attempt = repository.get_attempt(transaction_id)
+            if attempt:
+                repository.update_attempt(attempt, state="reconciling", error=error)
+            installation = repository.get(installation_id)
+            if installation:
+                if installation.previous_configuration_json:
+                    repository.update(
+                        installation,
+                        configuration_json=installation.previous_configuration_json,
+                        previous_configuration_json=None,
+                        provisioning_state="active",
+                        verification_status="verified",
+                        provisioning_error=f"replacement_uncertain:{error}",
+                        active_transaction_id=transaction_id,
+                        enabled=True,
+                    )
+                else:
+                    repository.update(
+                        installation,
+                        provisioning_state="reconciling",
+                        verification_status="pending",
+                        provisioning_error=error,
+                        active_transaction_id=transaction_id,
                         enabled=False,
                     )

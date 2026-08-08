@@ -75,7 +75,7 @@ async def validate_installation(installation_id: str, request: Request) -> Insta
     try:
         return response_for(await request.app.state.provisioning_service.validate(installation_id))
     except ProvisioningError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 @router.post("/{installation_id}/apply", response_model=InstallationResponse)
@@ -83,7 +83,7 @@ async def apply_installation(installation_id: str, request: Request) -> Installa
     try:
         return response_for(await request.app.state.provisioning_service.apply(installation_id))
     except ProvisioningError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
 
 
 @router.post("/{installation_id}/verify", response_model=InstallationResponse)
@@ -91,7 +91,7 @@ async def verify_installation(installation_id: str, request: Request) -> Install
     try:
         return response_for(await request.app.state.provisioning_service.verify(installation_id))
     except ProvisioningError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
 
 
 @router.post("/{installation_id}/disable", response_model=InstallationResponse)

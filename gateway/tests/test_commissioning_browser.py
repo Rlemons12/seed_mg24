@@ -46,6 +46,10 @@ def dashboard_page():
                 request.fulfill(path=STATIC / "app.js", content_type="application/javascript")
             elif path.endswith("/api/nodes") or path.endswith("/api/sensor-installations") or path.endswith("/api/sensor-profiles"):
                 request.fulfill(status=200, content_type="application/json", body="[]")
+            elif path.endswith("/preview"):
+                request.fulfill(status=200, content_type="application/json", body=json.dumps({"channels": []}))
+            elif path.endswith("/history"):
+                request.fulfill(status=200, content_type="application/json", body="[]")
             elif path == "http://dashboard.test/":
                 request.fulfill(path=TEMPLATE, content_type="text/html")
             else:
@@ -131,3 +135,40 @@ def test_unassigned_action_waits_for_fields_and_submits_exactly_once(dashboard_p
     button.click()
     page.wait_for_timeout(100)
     assert len(posts) == 1
+
+
+def test_invalidating_a_validated_draft_hides_apply_and_clears_confirmation(dashboard_page):
+    page, posts = dashboard_page
+    page.evaluate(
+        "state.draftId = 'server-issued-draft'; "
+        "document.querySelector('#apply-button').hidden = false; "
+        "document.querySelector('#apply-button').disabled = false; "
+        "document.querySelector('#apply-confirmed').checked = true"
+    )
+    page.locator("#wizard-display-name").evaluate(
+        "input => { input.value = 'changed after validation'; input.dispatchEvent(new Event('input', {bubbles: true})); }"
+    )
+    apply = page.locator("#apply-button")
+    assert page.evaluate("state.draftId") is None
+    assert apply.is_hidden() and apply.is_disabled()
+    assert not page.locator("#apply-confirmed").is_checked()
+    page.locator("#wizard-form").evaluate(
+        "form => form.dispatchEvent(new SubmitEvent('submit', {bubbles: true, cancelable: true}))"
+    )
+    page.wait_for_timeout(50)
+    assert posts == []
+
+
+def test_failed_installation_does_not_offer_blind_retry(dashboard_page):
+    page, _posts = dashboard_page
+    page.evaluate(
+        "state.installations = [{installation_id: 'failed-draft', node_id: 'MG24-0002', "
+        "device_id: 'A0001-00', display_name: 'Test_PDM', interface_id: 'IMU0', "
+        "sensor_profile_id: 'seeed.xiao_mg24_sense.accelerometer', sensor_profile_version: '1.0.0', "
+        "provisioning_state: 'failed', calibration_status: 'profile_configured', "
+        "verification_status: 'failed', provisioning_error: 'ValueError', location: '', description: ''}]"
+    )
+    page.evaluate("openDetail('failed-draft')")
+    page.wait_for_timeout(100)
+    retry = page.locator('[data-action="retry-installation"]')
+    assert retry.is_hidden() and retry.is_disabled()

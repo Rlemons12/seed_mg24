@@ -157,4 +157,4 @@ def test_dashboard_assets_are_revalidated_on_refresh(client):
     assert client.get("/").headers["cache-control"] == "no-cache, must-revalidate"
     assert client.get("/static/app.js?v=test").headers["cache-control"] == "no-cache, must-revalidate"
     html = client.get("/").text
-    assert "assignment-reconcile-3" in html
+    assert "transaction-reconcile-1" in html

@@ -55,6 +55,8 @@ def test_profile_node_and_generic_onboarding_api(client, app, compatible_discove
     interfaces = client.get("/api/nodes/MG24-0001/interfaces")
     assert interfaces.status_code == 200
     assert any(item["interface_id"] == "D0" and item["available"] for item in interfaces.json())
+    assert next(item for item in interfaces.json() if item["interface_id"] == "MIC")["configuration_persistence"] == "persistent"
+    assert next(item for item in interfaces.json() if item["interface_id"] == "IMU0")["configuration_supported"] is False
     draft = client.post("/api/sensor-installations", json=installation_body())
     assert draft.status_code == 201 and draft.json()["calibration_status"] == "not_configured"
     installation_id = draft.json()["installation_id"]
@@ -67,7 +69,7 @@ def test_apply_requires_recent_interface_telemetry(client, app, compatible_disco
     installation_id = draft["installation_id"]
     client.post(f"/api/sensor-installations/{installation_id}/validate")
     failed = client.post(f"/api/sensor-installations/{installation_id}/apply")
-    assert failed.status_code == 409 and "telemetry" in failed.json()["detail"]
+    assert failed.status_code == 409 and "telemetry" in failed.json()["detail"]["message"]
 
 
 def test_profile_validation_and_upload_limits(client, app):

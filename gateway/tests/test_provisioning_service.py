@@ -37,6 +37,12 @@ class SlowConfigurator(FakeConfigurator):
         return await super().apply(*args)
 
 
+class MicrophoneOnlyConfigurator(FakeConfigurator):
+    @staticmethod
+    def supports_interface(interface_id):
+        return interface_id == "MIC"
+
+
 def setup(settings):
     engine = create_database_engine(settings)
     initialize_database(engine)
@@ -108,7 +114,8 @@ async def test_failed_acknowledgement_and_readback(settings, adapter, error):
         await service.apply(installation_id)
     with factory() as session:
         item = InstallationRepository(session).get(installation_id)
-        assert item.provisioning_state == "failed" and not item.enabled
+        expected = "reconciling" if error == "acknowledgement" else "failed"
+        assert item.provisioning_state == expected and not item.enabled
 
 
 @pytest.mark.asyncio
@@ -127,10 +134,34 @@ async def test_timeout_is_failed_and_retryable(settings):
     factory, profiles, installation_id = setup(settings)
     service = SensorProvisioningService(factory, profiles, SlowConfigurator(), timeout_seconds=0.01)
     await service.validate(installation_id)
-    with pytest.raises(ProvisioningError, match="acknowledgement"):
+    with pytest.raises(ProvisioningError, match="acknowledgement") as captured:
         await service.apply(installation_id)
+    assert captured.value.detail["code"] == "acknowledgement_timeout"
+    assert captured.value.detail["retry_allowed"] is False
+    assert captured.value.detail["next_action"] == "authoritative_readback"
     with factory() as session:
-        assert InstallationRepository(session).get(installation_id).provisioning_state == "failed"
+        installation = InstallationRepository(session).get(installation_id)
+        assert installation.provisioning_state == "reconciling"
+        assert installation.active_transaction_id is not None
+        attempt = InstallationRepository(session).get_attempt(installation.active_transaction_id)
+        assert attempt.state == "reconciling"
+
+
+@pytest.mark.asyncio
+async def test_unsupported_persistent_interface_is_rejected_before_device_write(settings):
+    factory, profiles, installation_id = setup(settings)
+    adapter = MicrophoneOnlyConfigurator()
+    service = SensorProvisioningService(factory, profiles, adapter)
+    with pytest.raises(ProvisioningError) as captured:
+        await service.validate(installation_id)
+    assert captured.value.detail["code"] == "interface_configuration_unsupported"
+    assert captured.value.detail["device_state"] == "unchanged"
+    assert adapter.calls == 0
+    with factory() as session:
+        repository = InstallationRepository(session)
+        installation = repository.get(installation_id)
+        assert installation.provisioning_state == "failed"
+        assert installation.active_transaction_id is None
 
 
 @pytest.mark.asyncio

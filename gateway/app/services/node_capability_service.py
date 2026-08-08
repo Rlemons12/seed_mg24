@@ -25,6 +25,8 @@ class NodeCapabilityService:
                 capabilities=["built_in_microphone"],
                 telemetry_channels=["microphone_raw", "microphone_percent"],
                 exclusive=True,
+                configuration_supported=True,
+                configuration_persistence="persistent",
             ),
             NodeInterface(
                 interface_id="IMU0",

@@ -1,0 +1,32 @@
+# XIAO MG24 maintenance diagnostics
+
+These sketches isolate hardware and startup layers without using production
+provisioning or configuration commands. They are intended for bounded bench
+diagnostics, not production deployment.
+
+| Sketch | Stack option | Purpose |
+| --- | --- | --- |
+| `xiao_mg24_diagnostic` | `none` or `ble_silabs` | Verify Arduino startup, USB serial, `Serial1`, timing, and the onboard LED. |
+| `xiao_mg24_ble_advertising_diagnostic` | `ble_silabs` | Verify BLE system-boot dispatch and minimal legacy advertising. |
+| `xiao_mg24_imu_diagnostic` | `none` | Verify the onboard IMU can initialize and return samples. |
+| `xiao_mg24_microphone_diagnostic` | `none` | Verify microphone initialization and sampling without BLE. |
+| `xiao_mg24_microphone_ble_diagnostic` | `ble_silabs` | Verify microphone sampling while the BLE stack is active. |
+| `xiao_mg24_nvm_read_diagnostic` | `ble_silabs` | Initialize the production NVM3 backend and read identity/configuration status without changing records. |
+
+Build a sketch with Arduino CLI and a separate build directory. For example:
+
+```powershell
+arduino-cli compile `
+  --fqbn "SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs" `
+  --build-path sensor_package/build_diagnostic_ble `
+  sensor_package/firmware/diagnostics/xiao_mg24_ble_advertising_diagnostic
+```
+
+Use `protocol_stack=none` for the non-BLE sketches shown above. Building does
+not access hardware. Uploading remains a separate physical operation and must
+use the primary application image, never a `with_bootloader` artifact.
+
+The NVM read diagnostic is intentionally read-only at the application level.
+It must not gain provisioning, reset, delete, or write operations. Status
+values report persistence health without printing stored identity or
+configuration contents.

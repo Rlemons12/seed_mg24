@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 from collections.abc import Callable
+from uuid import uuid4
 
 from gateway.app.ble.constants import CAPABILITIES_UUID, COMMAND_UUID, METADATA_UUID, TELEMETRY_UUID
 
@@ -32,6 +33,38 @@ class BleNodeProvisioner:
             metadata = json.loads(bytes(await client.read_gatt_char(METADATA_UUID)).decode("utf-8"))
             capabilities = json.loads(bytes(await client.read_gatt_char(CAPABILITIES_UUID)).decode("utf-8"))
         return metadata, capabilities
+
+    async def read_state(self, address: str) -> dict:
+        """Read authoritative identity/configuration without changing persistent state."""
+        transaction_id = uuid4().hex[:16].upper()
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=4)
+
+        def notification(_sender, data: bytearray) -> None:
+            try:
+                payload = json.loads(bytes(data).decode("utf-8"))
+                if payload.get("t") in {"ca", "ce"} and payload.get("tx") == transaction_id:
+                    queue.put_nowait(payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, asyncio.QueueFull):
+                return
+
+        lock = self._locks.setdefault(address, asyncio.Lock())
+        if lock.locked():
+            raise BleProvisioningError("a provisioning operation is already active for this node")
+        async with lock:
+            async with self._client(address) as client:
+                metadata = json.loads(bytes(await client.read_gatt_char(METADATA_UUID)).decode("utf-8").strip("\x00"))
+                capabilities = json.loads(
+                    bytes(await client.read_gatt_char(CAPABILITIES_UUID)).decode("utf-8").strip("\x00")
+                )
+                await client.start_notify(TELEMETRY_UUID, notification)
+                await client.write_gatt_char(
+                    COMMAND_UUID, f"PROVGET 1 {transaction_id}".encode("ascii"), response=True
+                )
+                readback = await asyncio.wait_for(queue.get(), timeout=self.timeout_seconds)
+                await client.stop_notify(TELEMETRY_UUID)
+        if readback.get("code") != "readback" or not isinstance(readback.get("id"), str):
+            raise BleProvisioningError("device returned an invalid provisioning state")
+        return {"metadata": metadata, "capabilities": capabilities, "readback": readback}
 
     async def provision(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
         if not re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", node_id) or len(node_id) > 31:

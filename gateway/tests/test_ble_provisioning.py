@@ -60,3 +60,11 @@ async def test_assigned_identity_can_resume_readback_but_not_change_identity():
     await BleNodeProvisioner(lambda _: client).provision("address", "MG24-0001", "abcdef0123456789", CONFIG)
     with pytest.raises(BleProvisioningError, match="different identity"):
         await BleNodeProvisioner(lambda _: client).provision("address", "MG24-0002", "abcdef0123456789", CONFIG)
+
+
+@pytest.mark.asyncio
+async def test_read_state_uses_correlated_readback_as_authoritative_identity():
+    client = FakeClient("address", node_id="MG24-0002")
+    state = await BleNodeProvisioner(lambda _: client).read_state("address")
+    assert state["readback"]["id"] == "MG24-0002"
+    assert state["readback"]["code"] == "readback"

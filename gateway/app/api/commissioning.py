@@ -9,6 +9,15 @@ from gateway.app.services.device_service import DeviceService
 router = APIRouter(prefix="/api/commissioning", tags=["commissioning"])
 
 
+def assigned_conflict(node_id: str) -> dict:
+    return {
+        "code": "device_already_assigned",
+        "message": f"This MG24 is already assigned as {node_id}; application firmware installation preserves identity.",
+        "assigned_node_id": node_id,
+        "recovery": "Use its original dashboard database or the documented USB application-factory recovery workflow.",
+    }
+
+
 class CommissionNodeRequest(BaseModel):
     discovery_address: str = Field(min_length=3, max_length=128)
     node_id: str = Field(pattern=r"^[A-Z0-9]+(?:-[A-Z0-9]+)*$", max_length=31)
@@ -18,17 +27,67 @@ class CommissionNodeRequest(BaseModel):
     idempotency_key: str = Field(pattern=r"^[0-9a-f]{16,24}$")
 
 
+@router.get("/discoveries")
+async def commissioning_discoveries(request: Request) -> list[dict]:
+    results = []
+    for discovery in request.app.state.scanner.discoveries():
+        item = discovery.model_dump(mode="json")
+        if not discovery.compatible:
+            item.update({"commissioning_state": "incompatible", "action": "diagnose"})
+            results.append(item)
+            continue
+        with request.app.state.session_factory() as session:
+            local = DeviceRepository(session).get_by_ble_address(discovery.address)
+        if local is not None:
+            item.update({"stable_device_id": local.device_id, "temporary_id": None,
+                         "reported_node_id": local.device_id, "commissioning_state": "registered_here",
+                         "action": "view_or_reconnect", "local_device_id": local.device_id})
+            results.append(item)
+            continue
+        try:
+            state = await request.app.state.node_provisioner.read_state(discovery.address)
+            assigned_id = state["readback"]["id"]
+        except (BleProvisioningError, TimeoutError, ConnectionError) as exc:
+            item.update({"commissioning_state": "state_unavailable", "action": "retry_scan", "message": str(exc)})
+            results.append(item)
+            continue
+        item["reported_node_id"] = assigned_id
+        if assigned_id == "UNASSIGNED-MG24":
+            item.update({"commissioning_state": "unassigned", "action": "commission"})
+        else:
+            item.update({"stable_device_id": assigned_id, "temporary_id": None,
+                         "commissioning_state": "assigned_elsewhere", "action": "recovery_or_import",
+                         "message": assigned_conflict(assigned_id)["message"]})
+        results.append(item)
+    return results
+
+
 @router.post("/nodes", response_model=DeviceResponse)
 async def commission_node(body: CommissionNodeRequest, request: Request) -> DeviceResponse:
     discovery = request.app.state.scanner.get(body.discovery_address)
     if discovery is None or not discovery.compatible:
         raise HTTPException(status_code=409, detail="selected compatible discovery expired; scan again")
     with request.app.state.session_factory() as session:
-        existing = DeviceRepository(session).get(body.node_id)
+        repository = DeviceRepository(session)
+        local_by_address = repository.get_by_ble_address(body.discovery_address)
+        if local_by_address is not None:
+            return DeviceResponse.model_validate(local_by_address)
+        existing = repository.get(body.node_id)
         if existing is not None:
             if existing.ble_address == body.discovery_address:
                 return DeviceResponse.model_validate(existing)
             raise HTTPException(status_code=409, detail="node_id is already registered")
+    try:
+        state = await request.app.state.node_provisioner.read_state(body.discovery_address)
+    except (BleProvisioningError, TimeoutError, ConnectionError) as exc:
+        raise HTTPException(status_code=409, detail={"code": "device_state_unavailable", "message": str(exc)}) from exc
+    assigned_id = state["readback"]["id"]
+    if assigned_id != "UNASSIGNED-MG24":
+        with request.app.state.session_factory() as session:
+            local = DeviceRepository(session).get_by_ble_address(body.discovery_address)
+            if local is not None and local.device_id == assigned_id:
+                return DeviceResponse.model_validate(local)
+        raise HTTPException(status_code=409, detail=assigned_conflict(assigned_id))
     try:
         result = await request.app.state.node_provisioner.provision(
             body.discovery_address, body.node_id, body.idempotency_key, body.configuration.model_dump()

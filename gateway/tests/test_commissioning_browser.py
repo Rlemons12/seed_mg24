@@ -51,10 +51,18 @@ def dashboard_page():
                     "firmware_version": "0.1.0", "protocol_version": "1.0.0",
                 }]))
             elif path.endswith("/api/devices/MG24-0002/readings/latest"):
-                request.fulfill(status=200, content_type="application/json", body=json.dumps([{
-                    "channel": "acceleration_x", "normalized_value": 0.896, "unit": "g",
-                    "quality": "good", "received_at": "2026-08-08T20:02:20Z",
-                }]))
+                request.fulfill(status=200, content_type="application/json", body=json.dumps([
+                    {"channel": "analog_1", "normalized_value": 415, "unit": "adc_count",
+                     "quality": "uncalibrated", "received_at": "2026-08-08T20:02:20Z"},
+                    {"channel": "angular_velocity_x", "normalized_value": 0.28, "unit": "dps",
+                     "quality": "good", "received_at": "2026-08-08T20:02:20Z"},
+                    {"channel": "acceleration_x", "normalized_value": 0.896, "unit": "g",
+                     "quality": "good", "received_at": "2026-08-08T20:02:20Z"},
+                    {"channel": "battery_voltage", "normalized_value": 4.01, "unit": "V",
+                     "quality": "good", "received_at": "2026-08-08T20:02:20Z"},
+                    {"channel": "analog_0", "normalized_value": 662, "unit": "adc_count",
+                     "quality": "uncalibrated", "received_at": "2026-08-08T20:02:20Z"},
+                ]))
             elif path.endswith("/api/sensor-installations") or path.endswith("/api/sensor-profiles"):
                 request.fulfill(status=200, content_type="application/json", body="[]")
             elif path.endswith("/preview"):
@@ -116,9 +124,13 @@ def test_connected_node_renders_live_sensor_inputs_and_clear_empty_deployment_me
     page, _posts = dashboard_page
     assert page.get_by_text("Acceleration X", exact=True).is_visible()
     assert page.get_by_text("0.896 g", exact=True).is_visible()
-    assert page.get_by_text("Quality: good", exact=False).is_visible()
+    assert page.get_by_text("Quality: good", exact=False).first.is_visible()
     assert page.get_by_text("No optional equipment deployments", exact=False).is_visible()
     assert page.get_by_text("No attached sensors have been installed.", exact=True).count() == 0
+    channels = page.locator(".live-input-grid .channel").evaluate_all(
+        "nodes => nodes.map(node => node.dataset.channel)"
+    )
+    assert channels == ["acceleration_x", "angular_velocity_x", "battery_voltage", "analog_0", "analog_1"]
 
 
 def test_authoritative_assignment_clears_stale_unassigned_action(dashboard_page):

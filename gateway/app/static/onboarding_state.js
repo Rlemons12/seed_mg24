@@ -5,7 +5,20 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  function transition(item = null, phase = "pending") {
+  function commissioningEligible(item, classificationComplete = false, operationActive = false) {
+    return Boolean(
+      item
+      && classificationComplete
+      && item.commissioning_state === "unassigned"
+      && item.commissioning_eligible === true
+      && item.temporary_id
+      && !item.assigned_node_id
+      && item.compatible === true
+      && !operationActive
+    );
+  }
+
+  function transition(item = null, phase = "pending", operationActive = false) {
     const base = {
       selectedDiscovery: null,
       nodeId: "",
@@ -18,7 +31,7 @@
       action: "none",
     };
     if (phase === "pending" || !item) return base;
-    if (item.commissioning_state === "unassigned" && item.action === "commission") {
+    if (commissioningEligible(item, true, operationActive) && item.action === "commission") {
       return { ...base, selectedDiscovery: item, canProvision: true, showProvisioningFields: true,
         status: "Unassigned MG24 confirmed by device readback. Enter a new permanent identity.", action: "commission" };
     }
@@ -34,5 +47,5 @@
       action: item.action || "retry_scan" };
   }
 
-  return { transition };
+  return { commissioningEligible, transition };
 }));

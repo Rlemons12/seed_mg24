@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { nodes: [], installations: [], profiles: [], interfaces: [], selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, draftId: null };
+const state = { nodes: [], installations: [], profiles: [], interfaces: [], selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, draftId: null, commissioningActive: false };
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -13,7 +13,7 @@ async function api(path, options = {}) {
 }
 
 function renderCommissioningState(item = null, phase = "pending") {
-  const view = MG24Onboarding.transition(item, phase);
+  const view = MG24Onboarding.transition(item, phase, state.commissioningActive);
   state.selectedDiscovery = view.selectedDiscovery;
   $("new-node-id").value = view.nodeId;
   $("new-node-name").value = view.displayName;
@@ -22,9 +22,29 @@ function renderCommissioningState(item = null, phase = "pending") {
   $("assignment-recovery").classList.toggle("hidden", !view.showRecovery);
   $("assignment-status").textContent = view.status;
   [$("new-node-id"), $("new-node-name"), $("new-node-location")].forEach((input) => { input.disabled = !view.canProvision; });
-  $("provision-node-button").disabled = !view.canProvision;
+  const submit = $("provision-node-button");
+  submit.hidden = !view.canProvision;
+  submit.disabled = true;
+  submit.setAttribute("aria-disabled", "true");
+  submit.tabIndex = view.canProvision ? 0 : -1;
   notice("");
+  updateCommissioningSubmit();
   return view;
+}
+
+function currentCommissioningEligible() {
+  return MG24Onboarding.commissioningEligible(state.selectedDiscovery, true, state.commissioningActive);
+}
+
+function updateCommissioningSubmit() {
+  const submit = $("provision-node-button");
+  const fieldsValid = [$("new-node-id"), $("new-node-name"), $("new-node-location")]
+    .every((input) => input.checkValidity());
+  const eligible = currentCommissioningEligible();
+  submit.hidden = !eligible;
+  submit.disabled = !(eligible && fieldsValid);
+  submit.setAttribute("aria-disabled", String(submit.disabled));
+  submit.tabIndex = submit.hidden ? -1 : 0;
 }
 
 async function refresh() {
@@ -63,7 +83,8 @@ $("wizard-form").addEventListener("submit",async(event)=>{ event.preventDefault(
 
 $("register-node-button").addEventListener("click",()=>{ $("node-form").reset(); renderCommissioningState(); $("discovery-list").replaceChildren(); $("node-dialog").showModal(); });
 $("scan-button").addEventListener("click",async()=>{ const list=$("discovery-list"); renderCommissioningState(); list.replaceChildren(el("p","Checking assignment state...","muted")); try { const scan=await api("/api/devices/scan",{method:"POST"}); await new Promise((resolve)=>setTimeout(resolve,(scan.scan_duration_seconds+0.5)*1000)); const discoveries=await api("/api/commissioning/discoveries"); list.replaceChildren(); discoveries.forEach((item)=>{ const assigned=item.reported_node_id && item.reported_node_id!=="UNASSIGNED-MG24"; const label=`${item.name || "Unnamed"} - ${item.address} - ${item.rssi ?? "?"} dBm\n${assigned ? `Assigned: ${item.reported_node_id}` : item.commissioning_state}`; const button=el("button",label,`discovery ${item.action === "commission" ? "" : "incompatible"}`); button.type="button"; button.addEventListener("click",async()=>{ document.querySelectorAll(".discovery").forEach((node)=>node.classList.remove("selected")); button.classList.add("selected"); const view=renderCommissioningState(item,"classified"); if(view.action==="view_or_reconnect"){ await api(`/api/devices/${encodeURIComponent(item.local_device_id)}/connect`,{method:"POST"}); $("node-dialog").close(); await refresh(); $("node-list").scrollIntoView({behavior:"smooth"}); notice(`Reconnected ${item.local_device_id}.`); } }); list.append(button); }); if(!discoveries.some((item)=>item.action==="commission")) list.append(el("p","No unassigned MG24 is available. Assigned devices retain identity across firmware installation; use Reconnect/View Sensor or the documented recovery/import path.","warning")); } catch(error) { renderCommissioningState(null,"unavailable"); list.replaceChildren(el("p",error.message,"warning")); } });
-$("node-form").addEventListener("submit",async(event)=>{ event.preventDefault(); if(!state.selectedDiscovery || state.selectedDiscovery.commissioning_state!=="unassigned" || $("provision-node-button").disabled){notice("Authoritative unassigned state is required before provisioning.");return;} $("provision-node-button").disabled=true; try { const key=crypto.randomUUID().replaceAll("-","").slice(0,16); await api("/api/commissioning/nodes",{method:"POST",body:JSON.stringify({node_id:$("new-node-id").value,display_name:$("new-node-name").value,location:$("new-node-location").value || null,discovery_address:state.selectedDiscovery.address,idempotency_key:key,configuration:{sample_interval_ms:100,processing_interval_ms:100,report_interval_ms:100,heartbeat_interval_ms:30000,filter_type:"ema",filter_window:2,change_deadband:null,calibration_enabled:false,calibration_gain:null,calibration_offset:null,alarms_enabled:false,warning_low:null,warning_high:null,alarm_low:null,alarm_high:null,hardware_information:null}})}); $("node-dialog").close(); await refresh(); } catch(error){notice(error.message); $("provision-node-button").disabled=error.status===409 || !state.selectedDiscovery;} });
+[$("new-node-id"), $("new-node-name"), $("new-node-location")].forEach((input)=>input.addEventListener("input",updateCommissioningSubmit));
+$("node-form").addEventListener("submit",async(event)=>{ event.preventDefault(); if(!currentCommissioningEligible() || !$("node-form").checkValidity()){notice("Authoritative unassigned state and valid fields are required before provisioning.");updateCommissioningSubmit();return;} state.commissioningActive=true; updateCommissioningSubmit(); try { const key=crypto.randomUUID().replaceAll("-","").slice(0,16); await api("/api/commissioning/nodes",{method:"POST",body:JSON.stringify({node_id:$("new-node-id").value,display_name:$("new-node-name").value,location:$("new-node-location").value || null,discovery_address:state.selectedDiscovery.address,idempotency_key:key,configuration:{sample_interval_ms:100,processing_interval_ms:100,report_interval_ms:100,heartbeat_interval_ms:30000,filter_type:"ema",filter_window:2,change_deadband:null,calibration_enabled:false,calibration_gain:null,calibration_offset:null,alarms_enabled:false,warning_low:null,warning_high:null,alarm_low:null,alarm_high:null,hardware_information:null}})}); $("node-dialog").close(); await refresh(); } catch(error){notice(error.message);} finally { state.commissioningActive=false; updateCommissioningSubmit(); } });
 
 $("usb-detect-button").addEventListener("click",async()=>{ const list=$("usb-board-list"); list.replaceChildren(el("p","Detecting supported local boards...","muted")); try { const boards=await api("/api/firmware/boards"); list.replaceChildren(); boards.forEach((item)=>{ const button=el("button",`${item.board_type} - ${item.hardware_serial} - ${item.com_port || "no COM port"}`,"discovery"); button.type="button"; button.addEventListener("click",()=>{state.selectedUsbBoard=item;$("firmware-install-button").disabled=false;});list.append(button);}); if(!boards.length)list.append(el("p","No supported USB board detected.","muted")); } catch(error){list.replaceChildren(el("p",error.message,"warning"));} });
 $("firmware-install-button").addEventListener("click",async()=>{ if(!state.selectedUsbBoard)return; const packages=await api("/api/firmware/packages"); if(packages.length!==1)throw new Error("Exactly one approved firmware package is required for this workflow."); const box=$("firmware-progress"); box.textContent=`Validating ${packages[0].package_id}\nSHA-256 ${packages[0].sha256}`; try { let op=await api("/api/firmware/install",{method:"POST",body:JSON.stringify({hardware_serial:state.selectedUsbBoard.hardware_serial,package_id:packages[0].package_id})}); while(!["complete","failed"].includes(op.state)){await new Promise((resolve)=>setTimeout(resolve,500));op=await api(`/api/firmware/operations/${op.operation_id}`);box.textContent=op.progress.join("\n");} if(op.state!=="complete")throw new Error(op.error); box.textContent+=`\nFirmware installed and same board re-enumerated. Existing identity and configuration were preserved. Scan BLE to determine whether it is assigned or unassigned.`; }catch(error){box.textContent+=`\nFAILED: ${error.message}`;} });

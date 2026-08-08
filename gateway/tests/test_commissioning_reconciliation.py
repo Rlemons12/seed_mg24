@@ -128,7 +128,8 @@ console.log(JSON.stringify([
     action: 'recovery_or_import',
     reported_node_id: 'MG24-0002'
   }}, 'classified'),
-  m.transition({{commissioning_state: 'unassigned', action: 'commission'}}, 'classified')
+  m.transition({{commissioning_state: 'unassigned', commissioning_eligible: true,
+    temporary_id: 'unassigned:aa:bb:cc:dd:ee:01', compatible: true, action: 'commission'}}, 'classified')
 ]));
 """
     pending, assigned, unassigned = json.loads(subprocess.check_output(["node", "-e", script], text=True))
@@ -156,4 +157,4 @@ def test_dashboard_assets_are_revalidated_on_refresh(client):
     assert client.get("/").headers["cache-control"] == "no-cache, must-revalidate"
     assert client.get("/static/app.js?v=test").headers["cache-control"] == "no-cache, must-revalidate"
     html = client.get("/").text
-    assert "assignment-reconcile-2" in html
+    assert "assignment-reconcile-3" in html

@@ -17,6 +17,7 @@ class Discovery(BaseModel):
     compatible: bool = False
     compatibility_reason: str
     stable_device_id: str | None = None
+    temporary_id: str | None = Field(default=None, max_length=160)
     last_seen_at: datetime
 
 

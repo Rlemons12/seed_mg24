@@ -2,7 +2,9 @@
 
 This repository contains firmware for Seeed Studio XIAO MG24 Sense sensor nodes, a headless Raspberry Pi BLE gateway, a local FastAPI/WebSocket dashboard, and the original Tkinter USB/BLE desktop tool.
 
-New MG24 boards are compiled and uploaded from `sensor_package`, then receive a permanent `node_id` through the USB-only framed bootstrap protocol. Identity and operational configuration use separate redundant NVM3 records. Only allowlisted `configuration_only` and `application_factory` reset scopes exist; neither is a chip erase. Every physical upload or reset requires an explicit operator checkpoint. See `sensor_package/docs/device-identity.md`.
+Finished sensor products are shipped with production firmware and an unassigned commissioning state. The local dashboard can assign their permanent `node_id`, persist supported configuration over BLE, read it back, and activate an installation only after live telemetry is verified. A blank development board still needs USB, but the loopback-only dashboard firmware service installs only a hash-verified application package selected by hardware serial; it accepts neither paths nor uploader arguments from the browser.
+
+Identity and operational configuration use separate redundant NVM3 records. Ordinary BLE onboarding is write-once for identity. Only the USB recovery protocol exposes allowlisted `configuration_only` and `application_factory` reset scopes; neither is a chip erase. See `sensor_package/docs/device-identity.md`.
 
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 
@@ -67,7 +69,7 @@ At startup, an idempotent SQLite migration adds the installation mapping column 
 6. Read profile wiring notes and explicitly confirm the interface and hardware documentation. Generic inputs provide no invented wiring guidance.
 7. Create a draft and preview recent raw telemetry. The preview reports absent, stale, constant, and quality state; changing data is not proof of calibration.
 8. Review node, interface, identity, profile/version, units, intervals, filter, calibration, and alarm state; then confirm apply.
-9. The gateway reads configuration back from its applicable adapter and requires recent valid telemetry for the selected interface before marking the installation active.
+9. The gateway receives a device acknowledgement, reads persisted identity/configuration back from the MG24, and requires recent valid telemetry before marking the installation active.
 
 Provisioning states are `draft`, `validating`, `ready_to_apply`, `applying`, `verifying`, `active`, `failed`, `disabled`. Transaction IDs and attempts are persisted. Per-node and per-interface locks prevent concurrent overwrites. Retrying an already active transaction is idempotent. Initial failures remain visibly failed and disabled; a failed replacement restores the previous active configuration and records the replacement error.
 

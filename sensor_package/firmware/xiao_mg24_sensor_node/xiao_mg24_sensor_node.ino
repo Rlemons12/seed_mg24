@@ -53,6 +53,8 @@ bool mic_ok = false;
 bool ble_enabled = BLE_SUPPORTED;
 bool ble_connected = false;
 bool ble_notify_enabled = false;
+volatile bool ble_command_pending = false;
+char pending_ble_command[192] = {};
 #if BLE_SUPPORTED
 uint8_t ble_connection_handle = 0xff;
 uint8_t ble_advertising_set_handle = 0xff;
@@ -133,6 +135,15 @@ bool parse_bounded_uint(const String& text, uint32_t minimum, uint32_t maximum, 
   return true;
 }
 
+static bool next_command_token(const String& command, int* offset, String* token) {
+  if (!offset || !token || *offset < 0 || *offset >= (int)command.length()) return false;
+  int end = command.indexOf(' ', *offset);
+  if (end < 0) end = command.length();
+  *token = command.substring(*offset, end);
+  *offset = end + 1;
+  return token->length() > 0;
+}
+
 void command_result(bool accepted, const char* code) {
   char response[120];
   snprintf(response, sizeof(response), "{\"t\":\"%s\",\"v\":1,\"id\":\"%s\",\"s\":%lu,\"ms\":%lu,\"code\":\"%s\"}",
@@ -171,6 +182,106 @@ void report_runtime_configuration() {
 #if BLE_SUPPORTED
   if (ble_connected) ble_send_payload(response);
 #endif
+}
+
+void report_provisioning_state(const char* transaction_id, const char* code) {
+  char response[244];
+  snprintf(response, sizeof(response),
+           "{\"t\":\"ca\",\"v\":1,\"id\":\"%s\",\"tx\":\"%s\",\"code\":\"%s\","
+           "\"sample\":%lu,\"process\":%lu,\"report\":%lu,\"heartbeat\":%lu,\"filter\":%u,\"window\":%u,\"enabled\":%u}",
+           runtime_node_id(), transaction_id ? transaction_id : "", code,
+           (unsigned long)microphone_runtime_config.sample_interval_ms,
+           (unsigned long)microphone_runtime_config.processing_interval_ms,
+           (unsigned long)microphone_runtime_config.report_interval_ms,
+           (unsigned long)microphone_runtime_config.heartbeat_interval_ms,
+           (unsigned)microphone_runtime_config.filter_type, microphone_runtime_config.filter_window,
+           microphone_runtime_config.enabled ? 1 : 0);
+  Serial.println(response);
+#if BLE_SUPPORTED
+  if (ble_connected) ble_send_payload(response);
+#endif
+}
+
+bool handle_provision_command(const String& command) {
+  // Bounded versioned transaction. Identity is written last and is the durable commit marker.
+  if (!command.startsWith("PROV ") && !command.startsWith("PROVGET ")) return false;
+  int offset = command.startsWith("PROVGET ") ? 8 : 5;
+  String version, transaction_id;
+  if (!next_command_token(command, &offset, &version) || !next_command_token(command, &offset, &transaction_id) ||
+      version != "1" || transaction_id.length() < 8 || transaction_id.length() > 24) {
+    command_result(false, "invalid_provisioning_header"); return true;
+  }
+  if (command.startsWith("PROVGET ")) {
+    if (offset > (int)command.length()) { report_provisioning_state(transaction_id.c_str(), "readback"); return true; }
+    command_result(false, "invalid_format"); return true;
+  }
+  String node_id, sample, process, report, heartbeat, filter, window, enabled;
+  if (!next_command_token(command, &offset, &node_id) || !next_command_token(command, &offset, &sample) ||
+      !next_command_token(command, &offset, &process) || !next_command_token(command, &offset, &report) ||
+      !next_command_token(command, &offset, &heartbeat) || !next_command_token(command, &offset, &filter) ||
+      !next_command_token(command, &offset, &window) || !next_command_token(command, &offset, &enabled) ||
+      offset <= (int)command.length()) {
+    command_result(false, "invalid_format"); return true;
+  }
+  if (!NodeIdentityStore::valid_node_id(node_id.c_str())) { command_result(false, "invalid_node_id"); return true; }
+  NodeIdentity existing = {};
+  StoreStatus existing_status = node_identity_store.load(&existing);
+  if (existing_status == StoreStatus::Ok || existing_status == StoreStatus::RecoveredFromPrevious) {
+    if (strcmp(existing.node_id, node_id.c_str()) == 0) {
+      active_identity = existing; identity_store_status = existing_status;
+      report_provisioning_state(transaction_id.c_str(), "already_committed");
+    } else command_result(false, "identity_already_provisioned");
+    return true;
+  }
+  if (existing_status != StoreStatus::Unprovisioned) { command_result(false, store_status_name(existing_status)); return true; }
+  uint32_t sample_value, process_value, report_value, heartbeat_value, filter_value, window_value, enabled_value;
+  if (!parse_bounded_uint(sample, 50, 5000, &sample_value) ||
+      !parse_bounded_uint(process, 50, 5000, &process_value) ||
+      !parse_bounded_uint(report, 50, 5000, &report_value) ||
+      !parse_bounded_uint(heartbeat, 1000, 3600000, &heartbeat_value) ||
+      !parse_bounded_uint(filter, 0, 3, &filter_value) ||
+      !parse_bounded_uint(window, 1, MAX_FILTER_WINDOW, &window_value) ||
+      !parse_bounded_uint(enabled, 0, 1, &enabled_value)) {
+    command_result(false, "invalid_configuration"); return true;
+  }
+  StoredChannelConfiguration staged = {};
+  staged.sample_interval_ms = sample_value; staged.processing_interval_ms = process_value;
+  staged.report_interval_ms = report_value; staged.heartbeat_interval_ms = heartbeat_value;
+  staged.filter_type = (uint8_t)filter_value; staged.filter_window = (uint8_t)window_value;
+  staged.enabled = (uint8_t)enabled_value;
+  StoredChannelConfiguration verified = {};
+  StoreStatus stored = runtime_configuration_store.write(staged, &verified);
+  if (stored != StoreStatus::Ok) { command_result(false, store_status_name(stored)); return true; }
+  NodeIdentity provisioned = {};
+  stored = node_identity_store.provision(node_id.c_str(), &provisioned);
+  if (stored != StoreStatus::Ok) { command_result(false, store_status_name(stored)); return true; }
+  active_identity = provisioned; identity_store_status = StoreStatus::Ok;
+  microphone_runtime_config.sample_interval_ms = verified.sample_interval_ms;
+  microphone_runtime_config.processing_interval_ms = verified.processing_interval_ms;
+  microphone_runtime_config.report_interval_ms = verified.report_interval_ms;
+  microphone_runtime_config.heartbeat_interval_ms = verified.heartbeat_interval_ms;
+  microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
+  microphone_runtime_config.filter_window = verified.filter_window;
+  microphone_runtime_config.enabled = verified.enabled != 0;
+  sample_interval_ms = verified.report_interval_ms;
+  microphone_channel.reconfigure(&microphone_runtime_config);
+#if BLE_SUPPORTED
+  snprintf(metadata_json, sizeof(metadata_json),
+           "{\"node_id\":\"%s\",\"sensor_package_version\":\"%s\",\"firmware_version\":\"%s\","
+           "\"protocol_version\":\"%s\",\"configuration_schema_version\":%d,\"build_identifier\":\"%s\","
+           "\"git_commit\":\"%s\"}", runtime_node_id(), SENSOR_PACKAGE_VERSION, FIRMWARE_VERSION,
+           PROTOCOL_VERSION, CONFIGURATION_SCHEMA_VERSION, BUILD_IDENTIFIER, FIRMWARE_GIT_COMMIT);
+  ble_write_attribute_chunks(ble_metadata_characteristic_handle, (const uint8_t*)metadata_json, strlen(metadata_json));
+  // The only identity occurrence in capabilities is the leading node_id value.
+  char* identity_end = strstr(capabilities_json, "\",\"firmware_version\"");
+  if (identity_end) {
+    char tail[sizeof(capabilities_json)];
+    strncpy(tail, identity_end, sizeof(tail) - 1); tail[sizeof(tail) - 1] = '\0';
+    snprintf(capabilities_json, sizeof(capabilities_json), "{\"schema_version\":1,\"node_id\":\"%s%s", runtime_node_id(), tail);
+    ble_write_attribute_chunks(ble_capabilities_characteristic_handle, (const uint8_t*)capabilities_json, strlen(capabilities_json));
+  }
+#endif
+  report_provisioning_state(transaction_id.c_str(), "provisioned");
 }
 
 bool handle_config_command(const String& command) {
@@ -213,6 +324,8 @@ void handle_command(String command) {
     return;
   }
   command.toUpperCase();
+
+  if (handle_provision_command(command)) return;
 
   if (command == "CFGGET 1 MICROPHONE_RAW") {
     report_runtime_configuration();
@@ -430,14 +543,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       break;
     case sl_bt_evt_gatt_server_attribute_value_id:
       if (evt->data.evt_gatt_server_attribute_value.attribute == ble_command_characteristic_handle) {
-        char command[64];
-        uint8_t len = evt->data.evt_gatt_server_attribute_value.value.len;
-        if (len >= sizeof(command)) {
-          len = sizeof(command) - 1;
+        size_t len = evt->data.evt_gatt_server_attribute_value.value.len;
+        if (len >= sizeof(pending_ble_command) || ble_command_pending) {
+          break;
         }
-        memcpy(command, evt->data.evt_gatt_server_attribute_value.value.data, len);
-        command[len] = '\0';
-        handle_command(String(command));
+        memcpy(pending_ble_command, evt->data.evt_gatt_server_attribute_value.value.data, len);
+        pending_ble_command[len] = '\0';
+        ble_command_pending = true;
       }
       break;
     default:
@@ -488,7 +600,7 @@ void ble_initialize_gatt_db() {
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_WRITE,
                                               0x00, 0x00, command_characteristic_uuid,
-                                              sl_bt_gattdb_variable_length_value, 64,
+                                              sl_bt_gattdb_variable_length_value, 191,
                                               1, &empty_value, &ble_command_characteristic_handle);
   app_assert_status(sc);
 
@@ -614,6 +726,17 @@ bool ble_send_payload(const char* payload) {
 #endif
 
 void loop() {
+#if BLE_SUPPORTED
+  if (ble_command_pending) {
+    char command[sizeof(pending_ble_command)];
+    noInterrupts();
+    strncpy(command, pending_ble_command, sizeof(command) - 1);
+    command[sizeof(command) - 1] = '\0';
+    ble_command_pending = false;
+    interrupts();
+    handle_command(String(command));
+  }
+#endif
   static char serial_line[kBootstrapMaxLine + 1];
   static size_t serial_length = 0;
   static bool serial_overflow = false;

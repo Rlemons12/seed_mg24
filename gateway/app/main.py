@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from gateway import __version__
-from gateway.app.api import commands, devices, health, installations, nodes, profiles, telemetry
+from gateway.app.api import commands, commissioning, devices, firmware, health, installations, nodes, profiles, telemetry
 from gateway.app.ble.manager import BleManager
 from gateway.app.ble.scanner import BleScannerService
 from gateway.app.config import Settings, get_settings
@@ -24,8 +24,10 @@ from gateway.app.models import utc_now
 from gateway.app.profiles.registry import ProfileRegistry
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.repositories.firmware_repository import FirmwareHistoryRepository
+from gateway.app.services.ble_provisioning import BleNodeProvisioner
 from gateway.app.services.compatibility_service import CompatibilityService
-from gateway.app.services.provisioning_service import SensorProvisioningService
+from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, UsbFirmwareInstaller
+from gateway.app.services.provisioning_service import BlePersistentConfigurator, PiAuthoritativeConfigurator, SensorProvisioningService
 from gateway.app.services.telemetry_service import TelemetryService
 from gateway.app.services.websocket_manager import WebSocketManager
 
@@ -46,6 +48,10 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     compatibility = CompatibilityService(REPOSITORY_DIR / "shared_protocol" / "compatibility.json")
     websocket_manager = WebSocketManager()
     telemetry_service = TelemetryService(session_factory, websocket_manager, settings.max_payload_bytes, settings.max_payload_json_bytes)
+    catalog_path = settings.firmware_catalog_path
+    if not catalog_path.is_absolute():
+        catalog_path = REPOSITORY_DIR / catalog_path
+    firmware_catalog = ApprovedFirmwareCatalog(REPOSITORY_DIR, catalog_path)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -93,9 +99,18 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.session_factory = session_factory
     app.state.websocket_manager = websocket_manager
     app.state.profile_registry = profile_registry
-    app.state.provisioning_service = SensorProvisioningService(
-        session_factory, profile_registry, timeout_seconds=settings.provisioning_timeout_seconds
+    app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
+    configurator = (
+        BlePersistentConfigurator(session_factory, app.state.node_provisioner, lambda: app.state.ble_manager)
+        if client_factory is None
+        else PiAuthoritativeConfigurator()
     )
+    app.state.provisioning_service = SensorProvisioningService(
+        session_factory, profile_registry, configurator=configurator,
+        timeout_seconds=settings.provisioning_timeout_seconds,
+    )
+    app.state.firmware_catalog = firmware_catalog
+    app.state.firmware_installer = UsbFirmwareInstaller(firmware_catalog, REPOSITORY_DIR)
     app.state.scanner = BleScannerService(settings.scan_duration_seconds, settings.discovery_ttl_seconds, scanner_factory)
     app.state.ble_manager = BleManager(settings, telemetry_service.ingest, lambda *_: None, client_factory=client_factory)
     app.dependency_overrides[get_session] = session_dependency(session_factory)
@@ -107,6 +122,8 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.include_router(profiles.router)
     app.include_router(nodes.router)
     app.include_router(installations.router)
+    app.include_router(commissioning.router)
+    app.include_router(firmware.router)
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/", include_in_schema=False)

@@ -4,4 +4,6 @@ This directory is the authoritative data contract between the MG24 sensor packag
 
 Backward-compatible optional fields may be added within protocol 1.x. Removing fields, changing meanings or units, tightening accepted values, or changing framing requires a new major version and compatibility-matrix update. Database and UI concepts do not belong here.
 
+BLE onboarding reuses the command characteristic. `PROV 1` carries a bounded transaction ID, permanent node ID, and supported timing/filter fields. Firmware validates the whole request, verifies the redundant configuration write, and commits write-once identity last. `PROVGET 1` returns correlated readback for idempotent recovery. A matching assigned identity may be read back; replacement identity, reset, and recovery remain USB-only.
+
 USB bootstrap protocol v1 uses newline-delimited `MG24BOOT1 ` framing followed by bounded JSON. Requests and responses carry a schema version, bounded request ID, action, and correlated result/error. Canonical schemas cover bootstrap requests, responses, and node backups. No schema permits arbitrary NVM keys or broad erase operations. Backups use sorted compact JSON for their SHA-256 content hash; the hash detects accidental changes but is not authentication.

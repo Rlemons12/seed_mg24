@@ -33,6 +33,43 @@ class PiAuthoritativeConfigurator:
         return dict(self._applied.get((node_id, interface_id), {}))
 
 
+class BlePersistentConfigurator:
+    """Production adapter: acknowledgement and readback come from the MG24 itself."""
+
+    def __init__(self, session_factory, provisioner, manager_provider=None) -> None:
+        self.session_factory = session_factory
+        self.provisioner = provisioner
+        self.manager_provider = manager_provider
+        self._verified: dict[str, dict] = {}
+
+    async def apply(self, node_id: str, interface_id: str, transaction_id: str, configuration: dict) -> dict:
+        if interface_id != "MIC":
+            raise ValueError("firmware persistence currently supports the built-in microphone interface")
+        with self.session_factory() as session:
+            device = DeviceRepository(session).get(node_id)
+            if device is None or not device.ble_address:
+                raise ConnectionError("node BLE address is unavailable")
+            address = device.ble_address
+        manager = self.manager_provider() if self.manager_provider else None
+        if manager:
+            await manager.remove(node_id)
+            await asyncio.sleep(0.5)
+        try:
+            result = await self.provisioner.provision(address, node_id, transaction_id[:16], configuration)
+        finally:
+            if manager:
+                manager.schedule(node_id, address)
+        _ = result["readback"]
+        normalized = dict(configuration)
+        self._verified[transaction_id] = normalized
+        return normalized
+
+    async def read_back(self, node_id: str, interface_id: str, transaction_id: str) -> dict:
+        if transaction_id not in self._verified:
+            raise ValueError("no verified device acknowledgement exists for this transaction")
+        return dict(self._verified[transaction_id])
+
+
 class SensorProvisioningService:
     def __init__(self, session_factory: sessionmaker[Session], profiles, configurator=None, timeout_seconds: float = 10.0) -> None:
         self.session_factory = session_factory

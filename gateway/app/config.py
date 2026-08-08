@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     sensor_profile_directory: Path = Path("./data/sensor_profiles")
     max_profile_upload_bytes: int = Field(65536, ge=1024, le=1048576)
     provisioning_timeout_seconds: float = Field(10.0, ge=1.0, le=120.0)
+    firmware_catalog_path: Path = Path("./sensor_package/approved_firmware.json")
 
     @field_validator("log_level")
     @classmethod

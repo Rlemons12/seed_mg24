@@ -21,6 +21,7 @@ env/
 # Arduino / embedded build output
 build/
 dist/
+sensor_package/build_diagnostic*/
 sensor_package/config/device_config.local.h
 out/
 *.bin

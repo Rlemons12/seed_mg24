@@ -29,7 +29,14 @@ class BootstrapSerialClient:
             if not line:
                 break
             if line.startswith(PREFIX.encode()):
-                response = decode_response(line, request_id, action)
+                try:
+                    response = decode_response(line, request_id, action)
+                except ProtocolError as exc:
+                    # A response already queued for an earlier bounded request is not this
+                    # request's acknowledgement. Ignore it, but preserve all other failures.
+                    if str(exc) == "response correlation mismatch":
+                        continue
+                    raise
                 if response["status"] == "error":
                     raise ProtocolError(str(response.get("error_code", "device_error")))
                 return response

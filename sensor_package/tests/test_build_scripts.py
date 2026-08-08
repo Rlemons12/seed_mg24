@@ -56,3 +56,15 @@ def test_large_gatt_values_are_initialized_in_bounded_chunks():
     assert "ble_write_attribute_chunks(ble_metadata_characteristic_handle" in sketch
     assert "strlen(capabilities_json), (const uint8_t*)capabilities_json" not in sketch
     assert "strlen(metadata_json), (const uint8_t*)metadata_json" not in sketch
+
+
+def test_ble_command_callback_defers_persistence_to_main_loop():
+    package = Path(__file__).parents[1]
+    sketch = (package / "firmware/xiao_mg24_sensor_node/xiao_mg24_sensor_node.ino").read_text(encoding="utf-8")
+    callback = sketch.split("case sl_bt_evt_gatt_server_attribute_value_id:", 1)[1].split("default:", 1)[0]
+    loop = sketch.split("void loop() {", 1)[1]
+
+    assert "ble_command_pending = true" in callback
+    assert "handle_command" not in callback
+    assert "runtime_configuration_store.write" not in callback
+    assert "handle_command(String(command));" in loop

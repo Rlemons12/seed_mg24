@@ -55,6 +55,7 @@ class BleScannerService:
                 service_uuids=services,
                 compatible=compatible,
                 compatibility_reason=reason,
+                temporary_id=f"unassigned:{device.address.lower()}",
                 last_seen_at=datetime.now(UTC),
             )
             self._discoveries[device.address] = (discovery, monotonic())

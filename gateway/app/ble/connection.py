@@ -194,8 +194,12 @@ class DeviceConnection:
                 raise ValueError("metadata is not an object")
             # Legacy metadata remains readable for diagnostics, but is not considered fully compatible.
             identity = metadata.get("node_id", metadata.get("id"))
-            if identity is not None and identity != self.device_id:
+            # Windows may cache the pre-commissioning dynamic value. The address-to-node mapping
+            # is created only after a verified PROVGET readback, so tolerate only that sentinel.
+            if identity not in (None, self.device_id, "UNASSIGNED-MG24"):
                 raise ValueError("stable firmware identity mismatch")
+            if identity == "UNASSIGNED-MG24":
+                metadata["node_id"] = self.device_id
             self.metadata = {key: metadata[key] for key in (
                 "node_id", "sensor_package_version", "firmware_version", "protocol_version",
                 "configuration_schema_version", "build_identifier", "git_commit", "id", "fw", "v", "dt"
@@ -213,8 +217,10 @@ class DeviceConnection:
             capabilities = json.loads(raw.decode("utf-8").strip("\x00"))
             if not isinstance(capabilities, dict) or capabilities.get("schema_version") != 1:
                 raise ValueError("unsupported capability response")
-            if capabilities.get("node_id") != self.device_id:
+            if capabilities.get("node_id") not in {self.device_id, "UNASSIGNED-MG24"}:
                 raise ValueError("capability node identity mismatch")
+            if capabilities.get("node_id") == "UNASSIGNED-MG24":
+                capabilities["node_id"] = self.device_id
             self.capabilities = capabilities
         except ValueError:
             raise

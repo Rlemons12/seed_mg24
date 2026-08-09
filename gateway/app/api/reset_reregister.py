@@ -227,7 +227,18 @@ def cancel_reset(operation_id: str, body: ConfirmReset, request: Request,
 
 async def _monitor_reset(request: Request, workflow_id: str, reset_id: str) -> None:
     reset = request.app.state.usb_factory_reset.operations[reset_id]
+    reported_state = None
     while reset.state not in {"failed", "physical_complete"}:
+        workflow_state = "waiting_for_usb_reenumeration" if reset.state == "rebooting" else "reset_in_progress"
+        if workflow_state != reported_state:
+            with request.app.state.session_factory() as session:
+                service = ResetReregisterWorkflowService(session)
+                item = service.get(workflow_id)
+                service.transition(item, workflow_state, progress={
+                    "queued": "Preparing reset", "preparing": "Writing recovery marker and clearing application configuration",
+                    "rebooting": "Waiting for USB reboot and re-enumeration",
+                }.get(reset.state, "Factory reset is in progress"))
+            reported_state = workflow_state
         await asyncio.sleep(0.1)
     with request.app.state.session_factory() as session:
         service = ResetReregisterWorkflowService(session)
@@ -236,6 +247,7 @@ async def _monitor_reset(request: Request, workflow_id: str, reset_id: str) -> N
             service.transition(item, "recoverable_error", progress="Factory reset failed", error_code="reset_failed",
                                error_message=reset.error or "Physical reset did not complete.")
             return
+        service.transition(item, "post_reset_verification", progress="Verifying factory-default state after reboot")
         device = session.get(RegisteredDevice, item.source_record_id)
         try:
             DeviceLifecycleService(session).remove(
@@ -404,6 +416,9 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
             item.target_ble_address, item.target_device_id, item.operation_id[:16], json.loads(item.configuration_json))
         if result["readback"].get("id") != item.target_device_id:
             raise WorkflowError("provisioning_readback_failed", "Provisioned identity did not pass read-back.")
+        result_data = json.loads(item.result_json)
+        result_data["sensor_provisioned"] = True
+        item.result_json = json.dumps(result_data)
         session.add(DeviceLifecycleEvent(
             operation_id=f"{item.operation_id}-provision", event_type="ble_provisioned", device_id=item.target_device_id,
             display_name=item.target_display_name, hardware_id=item.hardware_id, ble_address=item.target_ble_address,
@@ -444,8 +459,12 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
         session.rollback()
         try:
             item = service.get(operation_id)
-            service.transition(item, "recoverable_error", error_code="provision_or_registration_failed",
-                               error_message=str(exc)[:500], progress="Provisioning or gateway registration requires retry")
+            sensor_provisioned = bool(json.loads(item.result_json).get("sensor_provisioned"))
+            code = "gateway_registration_failed" if sensor_provisioned else "ble_provisioning_failed"
+            progress = "Sensor provisioned; gateway registration requires retry" if sensor_provisioned \
+                else "BLE provisioning requires retry"
+            service.transition(item, "recoverable_error", error_code=code,
+                               error_message=str(exc)[:500], progress=progress)
         except WorkflowError:
             pass
         fail(exc if isinstance(exc, WorkflowError) else WorkflowError("provision_or_registration_failed", str(exc)))

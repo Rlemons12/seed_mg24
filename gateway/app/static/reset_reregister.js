@@ -121,7 +121,17 @@ window.MG24ResetReregister = (() => {
         sensor_id:result.sensor_id,sensor_name:result.sensor_name,location:result.location,gateway_registration:result.gateway_registration,
         ble_connection:result.ble_connection,first_telemetry:result.first_telemetry,backup:operation.backup_status};
         const url=URL.createObjectURL(new Blob([JSON.stringify(clean,null,2)],{type:"application/json"}));const anchor=document.createElement("a");anchor.href=url;anchor.download=`sensor-operation-${operation.operation_id}.json`;anchor.click();URL.revokeObjectURL(url);};controls.append(download);
-    } else { setPrimary("Resume setup", refreshOperation); }
+      ["View Live Telemetry","Edit Sensor Settings"].forEach((label)=>{const link=document.createElement("a");link.href="/";link.textContent=label;link.className="button";controls.append(link);});
+    } else if (operation.state === "recoverable_error" && operation.error?.code === "gateway_registration_failed") {
+      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"The physical reset and BLE provisioning succeeded. The sensor will not be reset again. Retry only the idempotent gateway registration step."}));
+      setPrimary("Retry Gateway Registration",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
+    } else if (operation.state === "recoverable_error" && operation.error?.code === "ble_provisioning_failed") {
+      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"The physical reset remains complete. Retry BLE provisioning; the durable device protocol safely resumes read-back when identity was already written."}));
+      setPrimary("Retry BLE Provisioning",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
+    } else {
+      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"Reconnect the same sensor over USB and use read-only reconciliation. Do not repeat factory reset automatically."}));
+      setPrimary("Resume setup", refreshOperation);
+    }
   }
   async function detectUsb() { const found=await post(`/api/reset-reregister/${operation.operation_id}/detect-usb`);detectedBoards=found.boards;
     const matches=found.boards.filter((board)=>board.identity_match);if(matches.length===1)operation=await post(`/api/reset-reregister/${operation.operation_id}/select-usb`,{port:matches[0].port,expected_hardware_id:operation.hardware_id});

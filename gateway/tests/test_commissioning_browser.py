@@ -57,14 +57,37 @@ def dashboard_page():
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({"device_id": "MG24-TEST"}))
             elif request.request.method == "POST" and path.endswith("/api/reset-reregister/start"):
                 posts.append({"workflow_start": json.loads(request.request.post_data or "{}")})
+                identity_mode = any(row.get("identity_ui") for row in posts)
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({
-                    "operation_id":"0123456789abcdef0123456789abcdef", "state":"usb_connection_required",
+                    "operation_id":"0123456789abcdef0123456789abcdef",
+                    "state":"searching_for_reset_sensor_ble" if identity_mode else "usb_connection_required",
                     "source_record_id":1, "source_device_id":"MG24-0002", "source_display_name":"XIAO MG24 Sense 01",
                     "hardware_id":"0x0123456789ABCDEF", "source_ble_address":"AA:BB:CC:DD:EE:02",
                     "selected_port":None, "backup_status":"pending", "registration_choice":None,
                     "target_device_id":None, "target_display_name":None, "target_location":None,
                     "target_ble_address":None, "progress":[], "result":{"firmware_version":"0.1.0"}, "error":None,
                     "started_at":"2026-08-09T00:00:00Z", "updated_at":"2026-08-09T00:00:00Z",
+                }))
+            elif request.request.method == "POST" and path.endswith("/scan-ble"):
+                request.fulfill(status=200, content_type="application/json", body=json.dumps({
+                    "operation_id":"0123456789abcdef0123456789abcdef", "state":"ble_identity_matched",
+                    "source_record_id":1, "source_device_id":"MG24-0002", "source_display_name":"XIAO MG24 Sense 01",
+                    "hardware_id":"0x0123456789ABCDEF", "source_ble_address":"AA:BB:CC:DD:EE:02",
+                    "selected_port":"COM10", "backup_status":"complete", "registration_choice":"restore",
+                    "target_device_id":"MG24-0002", "target_display_name":"XIAO MG24 Sense 01",
+                    "target_location":"Boiler room", "target_ble_address":"AA:BB:CC:DD:EE:20", "progress":[],
+                    "result":{"firmware_version":"0.1.0"}, "error":None,
+                    "started_at":"2026-08-09T00:00:00Z", "updated_at":"2026-08-09T00:00:00Z",
+                    "expected_onboarding_identity_hint":"7e6d1066…54a8", "candidates":[
+                        {"address":"AA:BB:CC:DD:EE:20","name":"XIAO-MG24-Sense","rssi":-61,
+                         "verification_status":"verified_match","label":"Verified physical sensor",
+                         "reason":"BLE identity exactly matches the USB-verified sensor.","provisioning_allowed":True,
+                         "firmware_version":"0.1.0","protocol_version":"1.0.0"},
+                        {"address":"AA:BB:CC:DD:EE:99","name":"XIAO-MG24-Sense","rssi":-18,
+                         "verification_status":"non_match","label":"Different sensor",
+                         "reason":"BLE identity does not match the USB-verified sensor.","provisioning_allowed":False,
+                         "firmware_version":"0.1.0","protocol_version":"1.0.0"}
+                    ]
                 }))
             elif "/static/css/" in path:
                 relative = path.split("/static/", 1)[1]
@@ -159,6 +182,23 @@ def test_reset_reregister_opens_one_accessible_guided_workflow(dashboard_page):
     assert dialog.get_by_role("status").count() == 1
     assert dialog.get_by_role("button", name="Detect USB sensor").is_enabled()
     assert posts == [{"workflow_start": {"device_id": "MG24-0002"}}]
+
+
+def test_reset_reregister_renders_verified_identity_and_ignores_stronger_wrong_rssi(dashboard_page):
+    page, posts = dashboard_page
+    posts.append({"identity_ui": True})
+    page.get_by_role("button", name="Close").click()
+    page.click('[data-node-id="MG24-0002"] .mg-module-sensor-card__toggle')
+    page.get_by_role("button", name="Reset and Re-register").click()
+    page.locator("#reset-reregister-dialog").wait_for(state="visible")
+    page.get_by_role("button", name="Scan for reset sensor").click()
+    page.get_by_text("Verified physical sensor", exact=True).wait_for()
+    assert page.get_by_text("Different sensor", exact=True).is_visible()
+    assert page.get_by_text("RSSI -18 dBm (informational)").is_visible()
+    provision = page.get_by_role("button", name="Provision This Sensor")
+    assert provision.is_enabled()
+    assert page.get_by_text("Expected onboarding identity: 7e6d1066…54a8").is_visible()
+    posts.remove({"identity_ui": True})
 
 
 @pytest.mark.parametrize("item,phase", [

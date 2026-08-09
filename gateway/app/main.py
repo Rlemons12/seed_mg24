@@ -123,12 +123,17 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
 
     @app.middleware("http")
     async def protect_lifecycle_requests(request: Request, call_next):
-        protected_post = request.method == "POST" and (request.url.path in {"/api/device-lifecycle/confirm", "/api/device-lifecycle/execute",
-                                              "/api/device-lifecycle/cancel",
-                                              "/api/factory-reset/confirm", "/api/factory-reset/execute",
-                                              "/api/factory-reset/cancel"} or (
-            request.url.path.startswith("/api/factory-reset/operations/") and request.url.path.endswith("/retry-cleanup")
-        ) or request.url.path.startswith("/api/reset-reregister/"))
+        protected_post = request.method == "POST" and (
+            request.url.path in {
+                "/api/device-lifecycle/confirm", "/api/device-lifecycle/execute", "/api/device-lifecycle/cancel",
+                "/api/factory-reset/confirm", "/api/factory-reset/execute", "/api/factory-reset/cancel",
+            }
+            or (
+                request.url.path.startswith("/api/factory-reset/operations/")
+                and request.url.path.endswith("/retry-cleanup")
+            )
+            or request.url.path.startswith("/api/reset-reregister/")
+        )
         if protected_post:
             try:
                 require_bounded_same_origin_json(request)

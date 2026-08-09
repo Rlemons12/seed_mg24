@@ -1,0 +1,79 @@
+/* Dashboard module styles; shared shell rules live under css/module_template. */
+.mg-shell h1, .mg-shell h2, .mg-shell h3, .mg-shell h4, .mg-shell p { margin-top: 0; }
+.mg-shell h2 { margin-bottom: .4rem; }
+.mg-shell .eyebrow, .mg-shell .equipment-id { color: var(--mg-accent); font-size: .72rem; font-weight: 800; letter-spacing: .13em; }
+.mg-shell .panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1.25rem; }
+.mg-shell .panel p, .mg-shell .muted { color: var(--mg-muted); }
+.mg-shell button { padding: .62rem .9rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-text); background: var(--mg-surface); cursor: pointer; font-weight: 700; }
+.mg-shell button:hover:not(:disabled) { border-color: var(--mg-accent); }
+.mg-shell button:disabled { cursor: not-allowed; opacity: .48; }
+.mg-shell button.primary { color: var(--mg-on-accent); background: var(--mg-accent); border-color: var(--mg-accent); }
+.mg-shell button.quiet { border-color: transparent; background: transparent; }
+.mg-shell .status-chip { display: inline-flex; align-items: center; width: max-content; padding: .42rem .7rem; border: 1px solid var(--mg-border); border-radius: 999px; color: var(--mg-success); background: var(--mg-surface); font-size: .78rem; font-weight: 800; }
+.mg-shell .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr)); align-items: start; gap: 1rem; }
+.mg-shell #node-list { grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 22rem)); justify-content: start; }
+.mg-shell .mg-module-sensor-card { min-width: 0; height: 3.5rem; overflow: clip; color: var(--mg-text); background: var(--mg-surface); border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); box-shadow: var(--mg-shadow); }
+.mg-shell .mg-module-sensor-card:has(.mg-module-sensor-card__toggle[aria-expanded="true"]) { grid-column: 1 / -1; height: auto; }
+.mg-shell .mg-module-sensor-card__heading { margin: 0; font-size: 1rem; }
+.mg-shell .mg-module-sensor-card__toggle { width: 100%; height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1rem; border: 0; border-radius: 0; text-align: left; }
+.mg-shell .mg-module-sensor-card__toggle:hover { background: color-mix(in srgb, var(--mg-surface) 91%, var(--mg-accent)); }
+.mg-shell .mg-module-sensor-card__toggle:focus-visible { position: relative; z-index: 1; outline-offset: -4px; }
+.mg-shell .mg-module-sensor-card__name { min-width: 0; overflow-wrap: anywhere; font-weight: 800; }
+.mg-shell .mg-module-sensor-card__chevron { width: .65rem; height: .65rem; flex: 0 0 auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .16s ease; }
+.mg-shell .mg-module-sensor-card__toggle[aria-expanded="true"] .mg-module-sensor-card__chevron { transform: rotate(225deg); }
+.mg-shell .mg-module-sensor-card__details { padding: 1.1rem; border-top: 1px solid var(--mg-border); }
+.mg-shell .mg-module-sensor-card__details h4 { margin: 1.25rem 0 .65rem; }
+.mg-shell .mg-module-sensor-card__details dl { display: grid; grid-template-columns: auto 1fr; gap: .45rem .85rem; font-size: .88rem; }
+.mg-shell .mg-module-sensor-card__details dt { color: var(--mg-muted); }
+.mg-shell .mg-module-sensor-card__details dd { margin: 0; text-align: right; }
+.mg-shell .live-input-grid { grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); margin-bottom: 1rem; }
+.mg-shell .device-card, .mg-shell .panel, .mg-shell dialog { color: var(--mg-text); background: var(--mg-surface); border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); box-shadow: var(--mg-shadow); }
+.mg-shell .device-card { padding: 1.2rem; }
+.mg-shell .device-card h3 { margin-bottom: .2rem; }
+.mg-shell .device-card dl { display: grid; grid-template-columns: auto 1fr; gap: .45rem .85rem; font-size: .88rem; }
+.mg-shell .device-card dt { color: var(--mg-muted); }
+.mg-shell .device-card dd { margin: 0; text-align: right; }
+.mg-shell .state { font-weight: 750; }
+.mg-shell .state.connected { color: var(--mg-success); }
+.mg-shell .state.stale, .mg-shell .state.backoff, .mg-shell .warning { color: #a96209; }
+.mg-shell .state.error, .mg-shell .state.disconnected, .mg-shell #notice { color: #b42318; }
+.mg-shell .panel { margin-top: 1.5rem; padding: clamp(1rem, 2.5vw, 1.5rem); }
+.mg-shell .hidden, .mg-shell [hidden] { display: none !important; }
+.mg-shell .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .9rem; margin: 1.25rem 0; }
+.mg-shell .form-grid label, .mg-shell .add-form label, .mg-shell dialog label { display: flex; flex-direction: column; gap: .32rem; color: var(--mg-muted); font-size: .84rem; }
+.mg-shell .wide { grid-column: 1 / -1; }
+.mg-shell input, .mg-shell textarea, .mg-shell select { width: 100%; padding: .68rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-text); background: var(--mg-surface); }
+.mg-shell textarea { min-height: 4.5rem; resize: vertical; }
+.mg-shell .actions, .mg-shell .command-row { display: flex; flex-wrap: wrap; gap: .6rem; }
+.mg-shell .channel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .65rem; }
+.mg-shell .channel { padding: .8rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); background: color-mix(in srgb, var(--mg-surface) 90%, var(--mg-accent)); }
+.mg-shell .channel strong, .mg-shell .channel span { display: block; }
+.mg-shell .channel span { margin-top: .2rem; color: var(--mg-muted); font-size: .8rem; }
+.mg-shell dialog { width: min(40rem, calc(100% - 1.5rem)); max-height: 92vh; padding: 1.5rem; overflow: auto; }
+.mg-shell dialog::backdrop { background: rgb(8 31 25 / 70%); backdrop-filter: blur(3px); }
+.mg-shell .discovery-list { display: grid; gap: .5rem; max-height: 14rem; margin: .85rem 0; overflow: auto; }
+.mg-shell .discovery { text-align: left; }
+.mg-shell .discovery.selected { outline: 3px solid var(--mg-accent); }
+.mg-shell .discovery.incompatible { border-color: #d8ad72; }
+.mg-shell .override { flex-direction: row; align-items: center; margin: .75rem 0; }
+.mg-shell .override input { width: auto; }
+.mg-shell .wizard { width: min(54rem, calc(100% - 1.5rem)); }
+.mg-shell .wizard fieldset, .mg-shell dialog fieldset { margin: .9rem 0; padding: 1rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); }
+.mg-shell .wizard legend, .mg-shell dialog legend { color: var(--mg-accent); font-weight: 800; }
+.mg-shell .wizard label { margin: .55rem 0; }
+.mg-shell .summary { padding: .75rem; border-left: 4px solid var(--mg-accent); background: color-mix(in srgb, var(--mg-surface) 88%, var(--mg-accent)); white-space: pre-wrap; }
+.mg-shell .warning { font-weight: 650; }
+.mg-shell #notice { min-height: 1.75rem; padding-top: .5rem; font-weight: 650; }
+
+@media (max-width: 650px) {
+  .mg-shell .panel-header { align-items: stretch; flex-direction: column; }
+  .mg-shell .form-grid { grid-template-columns: 1fr; }
+  .mg-shell .wide { grid-column: auto; }
+  .mg-shell #node-list { grid-template-columns: minmax(0, 1fr); }
+  .mg-shell .mg-module-sensor-card__details dl { grid-template-columns: 1fr; gap: .15rem; }
+  .mg-shell .mg-module-sensor-card__details dd { margin-bottom: .5rem; text-align: left; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mg-shell .mg-module-sensor-card__chevron { transition: none; }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://seed-mg24.local/schemas/bootstrap_request.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "schema_version", "request_id", "action"],
+  "properties": {
+    "type": {"const": "bootstrap_request"},
+    "schema_version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$"},
+    "action": {"enum": ["read_node_state", "read_identity", "provision_identity", "read_configuration", "backup_state", "verify_state", "restore_configuration", "prepare_factory_reset", "confirm_factory_reset", "cancel_factory_reset"]},
+    "node_id": {"type": "string", "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)*$", "maxLength": 31},
+    "scope": {"enum": ["configuration_only", "application_factory"]},
+    "confirmation_token": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "sample_interval_ms": {"type": "integer", "minimum": 10, "maximum": 5000},
+    "processing_interval_ms": {"type": "integer", "minimum": 10, "maximum": 5000},
+    "report_interval_ms": {"type": "integer", "minimum": 50, "maximum": 5000},
+    "heartbeat_interval_ms": {"type": "integer", "minimum": 1000, "maximum": 3600000},
+    "filter_type": {"type": "integer", "minimum": 0, "maximum": 4},
+    "filter_window": {"type": "integer", "minimum": 1, "maximum": 9},
+    "enabled": {"type": "integer", "enum": [0, 1]}
+  }
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=Seed MG24 Raspberry Pi BLE Gateway
+After=bluetooth.target network-online.target
+Wants=bluetooth.target network-online.target
+
+[Service]
+Type=simple
+User=seed-mg24
+Group=seed-mg24
+SupplementaryGroups=bluetooth
+WorkingDirectory=/opt/seed-mg24
+Environment=SEED_MG24_PROJECT_DIR=/opt/seed-mg24
+EnvironmentFile=-/etc/seed-mg24-gateway.env
+ExecStart=/usr/bin/bash /opt/seed-mg24/gateway/scripts/run_gateway.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/seed-mg24/data
+
+[Install]
+WantedBy=multi-user.target

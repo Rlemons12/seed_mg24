@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "profile_id": "seeed.xiao_mg24_sense.gyroscope",
+  "profile_version": "1.0.0",
+  "manufacturer": "Seeed Studio",
+  "model": "XIAO MG24 Sense LSM6DS3 gyroscope",
+  "display_name": "Built-in three-axis gyroscope",
+  "description": "Existing built-in telemetry as implemented by this repository firmware.",
+  "category": "angular_velocity",
+  "datasheet_reference": null,
+  "status": "verified",
+  "interface": {
+    "type": "built_in",
+    "supported_inputs": [
+      "built_in_imu_gyroscope"
+    ],
+    "supply_voltage": null,
+    "signal_min": null,
+    "signal_max": null,
+    "required_signal_conditioning": null,
+    "wiring_notes": [
+      "Built into the XIAO MG24 Sense; no external wiring."
+    ],
+    "exclusive": false
+  },
+  "measurement_channels": [
+    {
+      "channel_id": "angular_velocity_x",
+      "display_name": "Angular velocity X",
+      "quantity": "angular_velocity",
+      "raw_data_type": "float",
+      "raw_unit": "dps",
+      "engineering_unit": "dps",
+      "range_min": null,
+      "range_max": null,
+      "value_kind": "calibrated"
+    },
+    {
+      "channel_id": "angular_velocity_y",
+      "display_name": "Angular velocity Y",
+      "quantity": "angular_velocity",
+      "raw_data_type": "float",
+      "raw_unit": "dps",
+      "engineering_unit": "dps",
+      "range_min": null,
+      "range_max": null,
+      "value_kind": "calibrated"
+    },
+    {
+      "channel_id": "angular_velocity_z",
+      "display_name": "Angular velocity Z",
+      "quantity": "angular_velocity",
+      "raw_data_type": "float",
+      "raw_unit": "dps",
+      "engineering_unit": "dps",
+      "range_min": null,
+      "range_max": null,
+      "value_kind": "calibrated"
+    }
+  ],
+  "conversion": {
+    "type": "identity",
+    "gain": null,
+    "offset": null,
+    "coefficients": null,
+    "points": null
+  },
+  "sampling": {
+    "minimum_interval_ms": 50,
+    "default_interval_ms": 100,
+    "maximum_interval_ms": 5000
+  },
+  "filter": {
+    "supported": [
+      "none",
+      "ema",
+      "moving_average",
+      "median"
+    ],
+    "default": "none",
+    "maximum_window": 9
+  },
+  "alarms": {
+    "supported": true,
+    "defaults_enabled": false,
+    "warning_low": null,
+    "warning_high": null,
+    "alarm_low": null,
+    "alarm_high": null
+  },
+  "firmware": {
+    "minimum_version": null,
+    "required_capabilities": [
+      "built_in_imu_gyroscope"
+    ]
+  },
+  "provenance": {
+    "source": "seed_mg24 repository firmware",
+    "verified": true,
+    "verified_by": "repository implementation",
+    "verified_at": null,
+    "reference": "sensor_package/firmware/xiao_mg24_sensor_node/xiao_mg24_sensor_node.ino"
+  },
+  "deprecated_by": null
+}

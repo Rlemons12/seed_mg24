@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "gateway_version": "0.1.0",
+  "supported_protocol_versions": ["1.0.0"],
+  "supported_sensor_package_versions": {"minimum": "0.1.0", "maximum_exclusive": "1.0.0"},
+  "supported_configuration_schema_versions": [1]
+}

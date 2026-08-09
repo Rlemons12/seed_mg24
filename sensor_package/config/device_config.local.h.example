@@ -1,0 +1,5 @@
+#pragma once
+// Copy to device_config.local.h, assign a backed-up unique node ID, and never commit the local file.
+#define DEVICE_ID "MG24-0001"
+#define DEFAULT_BLE_NAME "XIAO-MG24-Sense"
+#define HARDWARE_REVISION "unknown"

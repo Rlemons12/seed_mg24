@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "package_id": "xiao-mg24-sensor-0.1.0",
+      "firmware_version": "0.1.0",
+      "protocol_version": "1.0.0",
+      "fqbn": "SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs",
+      "artifact_path": "sensor_package/build/xiao_mg24_sensor_node.ino.hex",
+      "artifact_filename": "xiao_mg24_sensor_node.ino.hex",
+      "artifact_size": 802564,
+      "sha256": "5C8EBB703EA4BA9DDEA0C1D7E73690C036F96710DF3BA0B526B6653BCE3D1FEE",
+      "application_start": "0x08006000",
+      "application_end": "0x0804BA7B",
+      "bootloader_end": "0x08005FFF",
+      "nvm3_start": "0x08174000",
+      "build_provenance": "physically verified acceptance build from feature/raspberry-pi-multi-sensor-gateway; SiliconLabs:silabs@4.0.0; arduino-cli 1.5.1",
+      "application_only": true
+    }
+  ]
+}

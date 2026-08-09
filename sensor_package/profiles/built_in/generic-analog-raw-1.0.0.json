@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "profile_id": "generic.analog_raw",
+  "profile_version": "1.0.0",
+  "manufacturer": "Generic",
+  "model": "Unknown analog sensor",
+  "display_name": "Generic analog raw input",
+  "description": "Uncalibrated raw ADC-count onboarding for unknown sensors. This is not a completed calibrated integration.",
+  "category": "raw_input",
+  "datasheet_reference": null,
+  "status": "unverified",
+  "interface": {"type": "analog", "supported_inputs": ["raw_adc"], "supply_voltage": null, "signal_min": null, "signal_max": null, "required_signal_conditioning": null, "wiring_notes": [], "exclusive": true},
+  "measurement_channels": [{"channel_id": "raw_value", "display_name": "Raw analog value", "quantity": null, "raw_data_type": "integer", "raw_unit": "adc_count", "engineering_unit": null, "range_min": null, "range_max": null, "value_kind": "raw"}],
+  "conversion": {"type": "unconfigured", "gain": null, "offset": null, "coefficients": null, "points": null},
+  "sampling": {"minimum_interval_ms": 50, "default_interval_ms": 100, "maximum_interval_ms": 5000},
+  "filter": {"supported": ["none", "ema", "moving_average", "median"], "default": "none", "maximum_window": 9},
+  "alarms": {"supported": false, "defaults_enabled": false, "warning_low": null, "warning_high": null, "alarm_low": null, "alarm_high": null},
+  "firmware": {"minimum_version": null, "required_capabilities": ["raw_adc"]},
+  "provenance": {"source": "generic raw-input framework", "verified": false, "verified_by": null, "verified_at": null, "reference": null},
+  "deprecated_by": null
+}

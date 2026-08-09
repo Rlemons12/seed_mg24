@@ -21,6 +21,14 @@ env/
 # Arduino / embedded build output
 build/
 dist/
+sensor_package/build_diagnostic*/
+sensor_package/build_review_*/
+sensor_package/BUILD_VALIDATION.json
+# Local one-off GATT/payload review reproductions retained outside version control.
+sensor_package/firmware/diagnostics/xiao_mg24_large_gatt_value_diagnostic/
+sensor_package/firmware/diagnostics/xiao_mg24_payload_diagnostic/
+sensor_package/firmware/diagnostics/xiao_mg24_production_gatt_diagnostic/
+sensor_package/config/device_config.local.h
 out/
 *.bin
 *.elf
@@ -36,6 +44,12 @@ out/
 *.tmp
 *.bak
 serial.log
+.env
+data/
+test_output/
+*.db
+*.db-shm
+*.db-wal
 
 # OS files
 .DS_Store

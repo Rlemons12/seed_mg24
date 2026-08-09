@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="gateway">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123d35">
+  <title>{% block title %}Seed Sensor Gateway{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/module_template/base.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/module_template/layouts.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/module_template/themes/gateway.css') }}">
+  {% block styles %}{% endblock %}
+</head>
+<body class="mg-shell">
+  <a class="mg-shell__skip-link" href="#module-content">Skip to main content</a>
+  <div class="mg-shell__frame">
+    {% include "module_template/sidebar.html" %}
+    <div class="mg-shell__workspace">
+      <header class="mg-shell__topbar">
+        <button id="shell-nav-toggle" class="mg-shell__nav-toggle" type="button"
+                aria-controls="shell-sidebar" aria-expanded="false">
+          <span aria-hidden="true">☰</span><span class="mg-shell__sr-only">Toggle navigation</span>
+        </button>
+        <div class="mg-shell__heading">
+          <span class="mg-shell__eyebrow">LOCAL SENSOR NETWORK</span>
+          <h1>{% block module_title %}Sensor Monitoring{% endblock %}</h1>
+        </div>
+        <div id="gateway-status" class="mg-shell__status" role="status" aria-live="polite">Connecting…</div>
+      </header>
+      <main id="module-content" class="mg-shell__content" tabindex="-1">
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="mg-shell__footer">
+        <small id="dashboard-build">Dashboard build: {{ dashboard_build }}</small>
+      </footer>
+    </div>
+  </div>
+  <div id="shell-scrim" class="mg-shell__scrim" hidden></div>
+  <script src="{{ url_for('static', path='/js/module_template/shell.js') }}?v={{ dashboard_build }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

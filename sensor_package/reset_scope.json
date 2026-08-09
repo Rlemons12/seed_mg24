@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "application_key_range": {"start": "0x0FF00", "end": "0x0FF0F"},
+  "scopes": {
+    "configuration_only": ["configuration_slot_a", "configuration_slot_b", "configuration_staging"],
+    "application_factory": ["identity_slot_a", "identity_slot_b", "configuration_slot_a", "configuration_slot_b", "configuration_staging", "store_metadata"]
+  },
+  "always_preserved": ["bootloader", "factory_data", "radio_calibration", "security_configuration", "debug_configuration", "bluetooth_stack_storage", "arduino_eeprom_keys", "non_application_nvm3_keys"]
+}

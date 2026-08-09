@@ -1,0 +1,22 @@
+{% extends "module_template/base.html" %}
+{% block title %}System Health · Seed Gateway{% endblock %}
+{% block module_title %}System Health{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}?v={{ dashboard_build }}">{% endblock %}
+{% block content %}
+  <section class="module-hero module-hero--compact" aria-labelledby="health-page-title">
+    <div><span class="eyebrow">SYSTEM HEALTH</span><h2 id="health-page-title">Gateway status</h2><p>Read-only service health and managed-device information for this local gateway.</p></div>
+  </section>
+  <div id="health-notice" role="status" aria-live="polite"></div>
+  <section class="panel module-panel" aria-labelledby="health-summary-title">
+    <div class="module-panel__header"><div><span class="eyebrow">RUNTIME</span><h2 id="health-summary-title">Service summary</h2><p>Updated automatically while this page remains open.</p></div><span id="health-state" class="status-chip">Checking…</span></div>
+    <dl class="mg-module-metrics">
+      <div><dt>Gateway version</dt><dd id="health-version">—</dd></div>
+      <div><dt>Managed connections</dt><dd id="health-devices">—</dd></div>
+      <div><dt>Server time</dt><dd id="health-time">—</dd></div>
+    </dl>
+  </section>
+{% endblock %}
+{% block scripts %}
+  <script src="{{ url_for('static', path='/js/module_template/module_client.js') }}?v={{ dashboard_build }}" defer></script>
+  <script src="{{ url_for('static', path='/js/modules/system_health.js') }}?v={{ dashboard_build }}" defer></script>
+{% endblock %}

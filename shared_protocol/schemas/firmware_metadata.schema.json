@@ -1,0 +1,5 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"firmware_metadata.schema.json","type":"object","additionalProperties":false,
+  "required":["node_id","sensor_package_version","firmware_version","protocol_version","configuration_schema_version","build_identifier"],
+  "properties":{"node_id":{"type":"string","pattern":"^[A-Z0-9]+(?:-[A-Z0-9]+)*$","maxLength":96},"sensor_package_version":{"type":"string","maxLength":32},"firmware_version":{"type":"string","maxLength":32},"protocol_version":{"type":"string","maxLength":32},"configuration_schema_version":{"type":"integer","minimum":1,"maximum":255},"build_identifier":{"type":"string","maxLength":96},"git_commit":{"type":["string","null"],"maxLength":64}}
+}

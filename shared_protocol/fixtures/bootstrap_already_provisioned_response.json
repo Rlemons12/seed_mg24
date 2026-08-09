@@ -1,0 +1,1 @@
+{"type":"bootstrap_response","schema_version":1,"request_id":"provision-001","action":"provision_identity","status":"error","error_code":"identity_already_provisioned_or_invalid"}

@@ -1,0 +1,5 @@
+# Build and flash
+
+Install Arduino CLI and run the setup wrapper, which reads exact tested versions from `sensor_package/toolchain.json`. The established Windows toolchain is Arduino CLI 1.5.1, `SiliconLabs:silabs@4.0.0`, and `Seeed Arduino LSM6DS3@2.0.7`; `SilabsMicrophoneAnalog` is bundled by that core. Compile the unassigned application with the component wrapper. The wrapper reads component/protocol versions, enables `protocol_stack=ble_silabs`, identifies dirty builds, and writes output only under `sensor_package/build/`.
+
+Flash requires an explicit port and a separate physical-write approval. It programs the application HEX through the core's OpenOCD `program` recipe; the wrapper never invokes mass erase or either core erase recipe. Initial identity assignment follows through `provision_node.ps1`. Before updates, create a configuration backup and verify the node. After upload, read metadata twice, confirm BLE advertising and telemetry, and compare configuration. Application-upload preservation of NVM3 requires physical verification; a BLE connection alone is not flash verification. OTA is unsupported.

@@ -43,6 +43,34 @@ Before reboot, firmware writes and verifies the integrity-protected `0x0FF06` ma
 5. Wait for reboot/re-enumeration. Success is reported only after read-back shows an unprovisioned sensor with the same hardware ID and firmware version and gateway cleanup succeeds.
 6. Use Add Sensor to onboard it as a new unprovisioned package. The old mutable sensor ID is not reused automatically.
 
+### Reset and Re-register Sensor
+
+The dashboard also offers one guided **Reset and Re-register Sensor** workflow. It composes the same USB reset,
+lifecycle, BLE onboarding, and gateway registration services; it does not implement a second reset path. The gateway
+stores a non-secret operation record so setup can resume after a browser or gateway restart. Reset challenges and
+confirmation tokens are process-local and never appear in saved workflow state, status responses, audit records, or
+downloaded summaries. Restart recovery performs physical read-back and never repeats a destructive reset command.
+
+The wizard verifies the selected immutable hardware ID over USB, creates an allowlisted application-configuration
+backup, requires hardware-specific reset confirmation, waits for re-enumeration even if the COM port changes, and
+does not advance until the backend verifies an unprovisioned non-telemetry bootstrap state. The operator must then
+explicitly choose one of these registration paths:
+
+* **Reuse previous registration details** uses Restore/Reapprove semantics and the existing archived record. It is
+  permitted only for the same immutable hardware identity, and it never happens automatically.
+* **Register as a new sensor** creates a new active record after provisioning. The prior record and its historical
+  telemetry remain archived; readings are not silently reassociated.
+
+BLE onboarding currently does not expose the immutable MCU hardware ID in its discovery metadata. The wizard therefore
+shows every unprovisioned candidate, never chooses among multiple candidates, and requires explicit physical
+correlation. USB identity remains authoritative. Adding a hardware-ID field to the authenticated/bootstrap BLE
+onboarding protocol would remove this remaining correlation limitation.
+
+Completion requires an active matching gateway record, managed BLE connection, and a telemetry or heartbeat received
+after the workflow began. Until then the truthful result is **Registered—waiting for first telemetry**, with Retry
+Connection and Finish Later available. The non-sensitive operation summary excludes credentials, configuration values,
+reset challenges, and confirmation tokens.
+
 If physical reset succeeds but gateway cleanup fails, the dashboard reports partial failure and polling/retry safely repeats only the idempotent cleanup. The gateway records `reset_pending` before execution and retains it across a gateway restart; use the ordinary confirmed removal workflow to reconcile a stranded pending registration if the in-memory USB operation was lost. If power is lost, reconnect USB and allow boot recovery to finish before onboarding. Do not upload firmware or operate a physical sensor without the operator's explicit authorization.
 
 ## Security limitation

@@ -55,6 +55,17 @@ def dashboard_page():
             if request.request.method == "POST" and path.endswith("/api/commissioning/nodes"):
                 posts.append(json.loads(request.request.post_data or "{}"))
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({"device_id": "MG24-TEST"}))
+            elif request.request.method == "POST" and path.endswith("/api/reset-reregister/start"):
+                posts.append({"workflow_start": json.loads(request.request.post_data or "{}")})
+                request.fulfill(status=200, content_type="application/json", body=json.dumps({
+                    "operation_id":"0123456789abcdef0123456789abcdef", "state":"usb_connection_required",
+                    "source_record_id":1, "source_device_id":"MG24-0002", "source_display_name":"XIAO MG24 Sense 01",
+                    "hardware_id":"0x0123456789ABCDEF", "source_ble_address":"AA:BB:CC:DD:EE:02",
+                    "selected_port":None, "backup_status":"pending", "registration_choice":None,
+                    "target_device_id":None, "target_display_name":None, "target_location":None,
+                    "target_ble_address":None, "progress":[], "result":{"firmware_version":"0.1.0"}, "error":None,
+                    "started_at":"2026-08-09T00:00:00Z", "updated_at":"2026-08-09T00:00:00Z",
+                }))
             elif "/static/css/" in path:
                 relative = path.split("/static/", 1)[1]
                 request.fulfill(path=STATIC / relative, content_type="text/css")
@@ -65,6 +76,8 @@ def dashboard_page():
                 request.fulfill(path=STATIC / relative, content_type="application/javascript")
             elif path.endswith("/static/onboarding_state.js"):
                 request.fulfill(path=STATIC / "onboarding_state.js", content_type="application/javascript")
+            elif path.endswith("/static/reset_reregister.js"):
+                request.fulfill(path=STATIC / "reset_reregister.js", content_type="application/javascript")
             elif path.endswith("/static/app.js"):
                 request.fulfill(path=STATIC / "app.js", content_type="application/javascript")
             elif path.endswith("/api/nodes"):
@@ -72,8 +85,12 @@ def dashboard_page():
                     "node_id": "MG24-0002", "display_name": "XIAO MG24 Sense 01",
                     "connection_status": "connected", "compatibility_status": "compatible",
                     "firmware_version": "0.1.0", "protocol_version": "1.0.0",
+                    "hardware_id": "0x0123456789ABCDEF", "ble_address": "AA:BB:CC:DD:EE:02",
+                    "lifecycle_state": "active", "factory_reset_status": "not_requested", "location": "Boiler room",
                 }]))
             elif path.endswith("/api/device-lifecycle/removed"):
+                request.fulfill(status=200, content_type="application/json", body="[]")
+            elif path.endswith("/api/reset-reregister/incomplete"):
                 request.fulfill(status=200, content_type="application/json", body="[]")
             elif path.endswith("/api/devices/MG24-0002/readings/latest"):
                 request.fulfill(status=200, content_type="application/json", body=json.dumps([
@@ -127,6 +144,21 @@ def assert_no_commissioning_action(page, posts):
     page.locator("#node-form").evaluate("form => form.dispatchEvent(new SubmitEvent('submit', {bubbles: true, cancelable: true}))")
     page.wait_for_timeout(50)
     assert posts == []
+
+
+def test_reset_reregister_opens_one_accessible_guided_workflow(dashboard_page):
+    page, posts = dashboard_page
+    page.get_by_role("button", name="Close").click()
+    page.click('[data-node-id="MG24-0002"] .mg-module-sensor-card__toggle')
+    page.get_by_role("button", name="Reset and Re-register").click()
+    dialog = page.locator("#reset-reregister-dialog")
+    dialog.wait_for(state="visible")
+    assert dialog.is_visible()
+    assert dialog.get_by_role("heading", name="Reset and Re-register Sensor").is_visible()
+    assert dialog.locator(".workflow-stepper li").count() == 16
+    assert dialog.get_by_role("status").count() == 1
+    assert dialog.get_by_role("button", name="Detect USB sensor").is_enabled()
+    assert posts == [{"workflow_start": {"device_id": "MG24-0002"}}]
 
 
 @pytest.mark.parametrize("item,phase", [

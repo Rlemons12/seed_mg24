@@ -31,7 +31,15 @@ class DeviceLifecycleService:
         self.session = session
         self.devices = DeviceRepository(session)
 
-    def remove(self, device_id: str, *, reason: str | None, connectivity_state: str) -> LifecycleResult:
+    def remove(
+        self,
+        device_id: str,
+        *,
+        reason: str | None,
+        connectivity_state: str,
+        method: str = "dashboard_confirmed",
+        factory_reset_requested: bool = False,
+    ) -> LifecycleResult:
         device = self.devices.get(device_id)
         if device is None:
             raise LifecycleError("device_not_found", "Sensor registration was not found.")
@@ -55,8 +63,8 @@ class DeviceLifecycleService:
             self.session.add(DeviceLifecycleEvent(
                 operation_id=operation_id, event_type="gateway_removed", device_id=device.device_id,
                 display_name=device.display_name, hardware_id=device.hardware_id, ble_address=device.ble_address,
-                connectivity_state=connectivity_state, method="dashboard_confirmed",
-                factory_reset_requested=False, result="success",
+                connectivity_state=connectivity_state, method=method,
+                factory_reset_requested=factory_reset_requested, result="success",
                 detail_json=json.dumps({"reason": reason, "installations_archived": len(installations)}, separators=(",", ":")),
             ))
             self.session.commit()

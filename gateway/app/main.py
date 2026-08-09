@@ -10,7 +10,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from gateway import __version__
-from gateway.app.api import commands, commissioning, device_lifecycle, devices, firmware, health, installations, nodes, profiles, telemetry
+from gateway.app.api import (
+    commands,
+    commissioning,
+    device_lifecycle,
+    devices,
+    factory_reset,
+    firmware,
+    health,
+    installations,
+    nodes,
+    profiles,
+    telemetry,
+)
 from gateway.app.ble.manager import BleManager
 from gateway.app.ble.scanner import BleScannerService
 from gateway.app.config import Settings, get_settings
@@ -33,6 +45,7 @@ from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, 
 from gateway.app.services.lifecycle_confirmation import LifecycleConfirmationStore
 from gateway.app.services.provisioning_service import BlePersistentConfigurator, PiAuthoritativeConfigurator, SensorProvisioningService
 from gateway.app.services.telemetry_service import TelemetryService
+from gateway.app.services.usb_factory_reset import UsbFactoryResetService
 from gateway.app.services.websocket_manager import WebSocketManager
 
 PACKAGE_DIR = Path(__file__).parent
@@ -109,7 +122,9 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
 
     @app.middleware("http")
     async def protect_lifecycle_requests(request: Request, call_next):
-        if request.url.path in {"/api/device-lifecycle/confirm", "/api/device-lifecycle/execute"}:
+        protected_post = request.url.path in {"/api/device-lifecycle/confirm", "/api/device-lifecycle/execute",
+                                              "/api/factory-reset/confirm", "/api/factory-reset/execute"}
+        if protected_post:
             if request.method != "POST":
                 return JSONResponse(status_code=405, content={"error": "method_not_allowed", "detail": "POST is required."})
             content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -136,6 +151,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
     app.state.device_configuration_results = {}
     app.state.lifecycle_confirmations = LifecycleConfirmationStore()
+    app.state.usb_factory_reset = UsbFactoryResetService()
     configurator = (
         BlePersistentConfigurator(session_factory, app.state.node_provisioner, lambda: app.state.ble_manager)
         if client_factory is None
@@ -153,6 +169,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.include_router(health.router)
     app.include_router(devices.router)
     app.include_router(device_lifecycle.router)
+    app.include_router(factory_reset.router)
     app.include_router(commands.router)
     app.include_router(telemetry.router)
     app.include_router(telemetry.ws_router)

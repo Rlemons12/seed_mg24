@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, draftId: null, commissioningActive: false };
+const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, resetTarget: null, resetConfirmation: null, draftId: null, commissioningActive: false };
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -116,7 +116,10 @@ function renderNodes() {
     const remove = el("button", "Remove from network", "danger");
     remove.type = "button";
     remove.addEventListener("click", () => openLifecycle("remove", node));
-    actions.append(reconnect, configure, remove);
+    const factoryReset = el("button", "Factory Reset Sensor", "danger");
+    factoryReset.type = "button";
+    factoryReset.addEventListener("click", () => openFactoryReset(node).catch((error) => notice(error.message)));
+    actions.append(reconnect, configure, remove, factoryReset);
     details.append(actions);
     card.append(heading, details);
     list.append(card);
@@ -172,6 +175,49 @@ $("lifecycle-form").addEventListener("submit", async (event) => {
   } catch (error) { notice(error.message); $("lifecycle-execute").disabled = false; }
 });
 document.querySelector('[data-action="close-lifecycle"]').addEventListener("click",()=>{$("lifecycle-dialog").close();state.lifecycle=null;});
+
+async function openFactoryReset(node) {
+  state.resetTarget = node; state.resetConfirmation = null;
+  const boards = await api("/api/factory-reset/boards");
+  const select = $("factory-reset-board"); select.replaceChildren();
+  boards.forEach((board) => {
+    const option = el("option", `${board.port} — ${board.node_id || "unprovisioned"} — ${board.hardware_id || "identity unavailable"}`);
+    option.value = board.port; option.dataset.hardwareId = board.hardware_id || ""; option.dataset.nodeId = board.node_id || "";
+    option.disabled = board.hardware_id !== node.hardware_id && (node.hardware_id || board.node_id !== node.node_id);
+    select.append(option);
+  });
+  const match = [...select.options].find((option) => !option.disabled);
+  if (!match) throw new Error("No positively identified USB sensor matches this gateway sensor.");
+  select.value = match.value; $("factory-reset-confirm-id").value = ""; $("factory-reset-execute").disabled = true;
+  $("factory-reset-identity").textContent = `${node.display_name}; sensor ID ${node.node_id}; hardware ${match.dataset.hardwareId}; port ${match.value}; firmware ${node.firmware_version || "unknown"}; currently ${node.connection_status}.`;
+  $("factory-reset-progress").textContent = "Identity matched. Type the immutable hardware ID to request a device-bound challenge.";
+  $("factory-reset-dialog").showModal();
+}
+$("factory-reset-confirm-id").addEventListener("input", () => {
+  const option = $("factory-reset-board").selectedOptions[0];
+  $("factory-reset-execute").disabled = !option || $("factory-reset-confirm-id").value !== option.dataset.hardwareId;
+});
+$("factory-reset-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const option = $("factory-reset-board").selectedOptions[0];
+  if (!state.resetTarget || !option || $("factory-reset-confirm-id").value !== option.dataset.hardwareId) return;
+  $("factory-reset-execute").disabled = true;
+  try {
+    const target = {device_id:state.resetTarget.node_id, hardware_id:option.dataset.hardwareId, port:option.value};
+    const confirmation = await api("/api/factory-reset/confirm", {method:"POST", body:JSON.stringify(target)});
+    $("factory-reset-progress").textContent = "Physical identity and firmware verified. Reset in progress…";
+    const operation = await api("/api/factory-reset/execute", {method:"POST", body:JSON.stringify({...target, confirmation_token:confirmation.confirmation_token})});
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const current = await api(`/api/factory-reset/operations/${encodeURIComponent(operation.operation_id)}`);
+      $("factory-reset-progress").textContent = [...current.progress, current.error || ""].filter(Boolean).join("\n");
+      if (current.state === "complete") {
+        $("factory-reset-dialog").close(); notice("Factory reset verified after reboot. Firmware and telemetry history were preserved. Use Add Sensor to onboard it with an explicitly selected identity."); await refresh(); break;
+      }
+      if (["failed","partial_failure"].includes(current.state)) { $("factory-reset-execute").disabled = false; break; }
+    }
+  } catch (error) { $("factory-reset-progress").textContent = error.message; $("factory-reset-execute").disabled = false; }
+});
+document.querySelector('[data-action="close-factory-reset"]').addEventListener("click",()=>{$("factory-reset-dialog").close();state.resetTarget=null;});
 
 async function openDeviceConfiguration(node) { state.selectedConfigNode=node.node_id; const current=await api(`/api/nodes/${encodeURIComponent(node.node_id)}/configuration`); $("device-config-title").textContent=`Configure ${node.display_name}`; $("device-cfg-sample").value=current.sample_interval_ms; $("device-cfg-processing").value=current.processing_interval_ms; $("device-cfg-report").value=current.report_interval_ms; $("device-cfg-heartbeat").value=current.heartbeat_interval_ms; $("device-cfg-filter").value=current.filter_type; $("device-cfg-window").value=current.filter_window; $("device-config-summary").textContent="Current persisted settings read from the sensor. Apply performs one write followed by authoritative readback."; $("device-config-dialog").showModal(); }
 

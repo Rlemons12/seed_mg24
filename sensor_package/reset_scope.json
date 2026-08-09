@@ -5,5 +5,6 @@
     "configuration_only": ["configuration_slot_a", "configuration_slot_b", "configuration_staging"],
     "application_factory": ["identity_slot_a", "identity_slot_b", "configuration_slot_a", "configuration_slot_b", "configuration_staging", "store_metadata"]
   },
+  "transaction_keys": ["reset_transaction_marker"],
   "always_preserved": ["bootloader", "factory_data", "radio_calibration", "security_configuration", "debug_configuration", "bluetooth_stack_storage", "arduino_eeprom_keys", "non_application_nvm3_keys"]
 }

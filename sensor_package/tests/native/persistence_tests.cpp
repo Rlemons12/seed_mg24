@@ -23,7 +23,17 @@ int main(){
   uint8_t payload[]={1,2,3},record[kPersistentMaxRecord];size_t n=0;assert(encode_persistent_record(PersistentRecordType::Identity,7,0,payload,3,record,sizeof(record),&n)==StoreStatus::Ok);RecordView view;assert(decode_persistent_record(record,n,PersistentRecordType::Identity,&view)==StoreStatus::Ok&&view.generation==7);record[n-1]^=1;assert(decode_persistent_record(record,n,PersistentRecordType::Identity,&view)==StoreStatus::IntegrityFailed);
   FakeNvm nvm;NodeIdentityStore ids(nvm);NodeIdentity id={};assert(ids.load(&id)==StoreStatus::Unprovisioned);assert(!NodeIdentityStore::valid_node_id("bad id"));assert(ids.provision("MG24-0001",&id)==StoreStatus::Ok);assert(!strcmp(id.node_id,"MG24-0001"));assert(ids.provision("MG24-0002",&id)==StoreStatus::InvalidArgument);NodeIdentityStore restarted(nvm);assert(restarted.load(&id)==StoreStatus::RecoveredFromPrevious||restarted.load(&id)==StoreStatus::Ok);
   PersistentConfigurationStore configs(nvm);StoredChannelConfiguration verified={};auto c=valid_config();assert(configs.write(c,&verified)==StoreStatus::Ok);c.report_interval_ms=200;nvm.fail_write=true;assert(configs.write(c,&verified)==StoreStatus::WriteFailed);nvm.fail_write=false;assert(configs.load(&verified)==StoreStatus::RecoveredFromPrevious||configs.load(&verified)==StoreStatus::Ok);assert(verified.report_interval_ms==100);
-  FactoryResetController reset(nvm);ResetChallenge challenge;assert(reset.prepare(ResetScope::ConfigurationOnly,10,1000,&challenge)==StoreStatus::Ok);assert(nvm.find(ApplicationNvmKeys::kConfigurationSlotA));assert(reset.confirm(ResetScope::ApplicationFactory,challenge.token,20).status==StoreStatus::InvalidArgument);assert(reset.confirm(ResetScope::ConfigurationOnly,challenge.token,20).status==StoreStatus::Ok);assert(!nvm.find(ApplicationNvmKeys::kConfigurationSlotA));assert(nvm.find(ApplicationNvmKeys::kIdentitySlotA));assert(reset.confirm(ResetScope::ConfigurationOnly,challenge.token,20).status==StoreStatus::InvalidArgument);
-  assert(reset.prepare(ResetScope::ApplicationFactory,100,1000,&challenge)==StoreStatus::Ok);assert(reset.confirm(ResetScope::ApplicationFactory,challenge.token,1200).status==StoreStatus::InvalidArgument);assert(nvm.find(ApplicationNvmKeys::kIdentitySlotA));
+  const char* hw="0x0123456789ABCDEF";const char* op="00112233445566778899AABBCCDDEEFF";const char* token="FFEEDDCCBBAA99887766554433221100";
+  FactoryResetController reset(nvm);ResetChallenge challenge;
+  assert(reset.prepare(ResetScope::ApplicationFactory,hw,"0xFEDCBA9876543210",op,token,10,1000,&challenge)==StoreStatus::InvalidArgument);
+  assert(reset.prepare(ResetScope::ApplicationFactory,hw,hw,op,token,10,1000,&challenge)==StoreStatus::Ok);
+  assert(reset.confirm(ResetScope::ApplicationFactory,hw,op,"00000000000000000000000000000000",20).status==StoreStatus::InvalidArgument);
+  assert(nvm.find(ApplicationNvmKeys::kIdentitySlotA));
+  assert(reset.prepare(ResetScope::ApplicationFactory,hw,hw,op,token,30,1000,&challenge)==StoreStatus::Ok);
+  ResetResult result=reset.confirm(ResetScope::ApplicationFactory,hw,op,token,40);assert(result.status==StoreStatus::Ok);
+  assert(!nvm.find(ApplicationNvmKeys::kIdentitySlotA));assert(nvm.find(ApplicationNvmKeys::kResetTransactionMarker));
+  assert(reset.confirm(ResetScope::ApplicationFactory,hw,op,token,50).status==StoreStatus::InvalidArgument);
+  FactoryResetController rebooted(nvm);bool recovered=false;assert(rebooted.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(!nvm.find(ApplicationNvmKeys::kResetTransactionMarker));assert(!nvm.find(ApplicationNvmKeys::kIdentitySlotA));
   return 0;
 }

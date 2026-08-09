@@ -23,6 +23,9 @@ def main() -> int:
         unknown = set(targets) - registered.keys()
         if unknown:
             raise ValueError(f"{name} contains unregistered keys: {sorted(unknown)}")
+    transaction_keys = scope.get("transaction_keys", [])
+    if set(transaction_keys) - registered.keys() or set(transaction_keys) & set(scope["scopes"]["application_factory"]):
+        raise ValueError("transaction marker must be registered and excluded from the reset deletion loop")
     source = "\n".join(path.read_text(encoding="utf-8") for path in FIRMWARE.glob("*") if path.suffix in {".h", ".cpp", ".ino"})
     forbidden = ["nvm3_eraseAll", "masserase", "flash erase_sector", "device masserase"]
     found = [token for token in forbidden if token in source]

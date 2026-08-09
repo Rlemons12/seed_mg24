@@ -11,6 +11,7 @@
 #include "node_identity_store.h"
 #include "nvm_backend.h"
 #include "usb_bootstrap.h"
+#include "silabs_additional.h"
 #if defined(ARDUINO_SILABS_STACK_BLE_SILABS)
 #include "sl_bluetooth.h"
 #define BLE_SUPPORTED 1
@@ -81,6 +82,8 @@ UsbBootstrapProtocol usb_bootstrap(node_identity_store, runtime_configuration_st
 NodeIdentity active_identity = {};
 StoreStatus identity_store_status = StoreStatus::Unprovisioned;
 StoreStatus configuration_store_status = StoreStatus::NotFound;
+StoreStatus reset_recovery_status = StoreStatus::Ok;
+bool bootstrap_only = true;
 
 const char* runtime_node_id() {
   return (identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious)
@@ -208,6 +211,7 @@ void report_provisioning_state(const char* transaction_id, const char* code) {
 
 bool handle_provision_command(const String& command) {
   // Bounded versioned transaction. Identity is written last and is the durable commit marker.
+  if (factory_reset_controller.busy()) { command_result(false, "persistent_operation_busy"); return true; }
   if (!command.startsWith("PROV ") && !command.startsWith("PROVGET ")) return false;
   int offset = command.startsWith("PROVGET ") ? 8 : 5;
   String version, transaction_id;
@@ -260,6 +264,7 @@ bool handle_provision_command(const String& command) {
   stored = node_identity_store.provision(node_id.c_str(), &provisioned);
   if (stored != StoreStatus::Ok) { command_result(false, store_status_name(stored)); return true; }
   active_identity = provisioned; identity_store_status = StoreStatus::Ok;
+  bootstrap_only = false;
   microphone_runtime_config.sample_interval_ms = verified.sample_interval_ms;
   microphone_runtime_config.processing_interval_ms = verified.processing_interval_ms;
   microphone_runtime_config.report_interval_ms = verified.report_interval_ms;
@@ -290,6 +295,7 @@ bool handle_provision_command(const String& command) {
 }
 
 bool handle_configuration_transaction(const String& command) {
+  if (factory_reset_controller.busy() || bootstrap_only) { command_result(false, "bootstrap_only"); return true; }
   // Atomic device-level persistent configuration. Permanent node identity is never changed here.
   if (!command.startsWith("CFGSET ")) return false;
   int offset = 7;
@@ -378,6 +384,11 @@ void handle_command(String command) {
     return;
   }
   command.toUpperCase();
+
+  if (bootstrap_only && !command.startsWith("PROV ") && !command.startsWith("PROVGET ")) {
+    command_result(false, "bootstrap_only");
+    return;
+  }
 
   if (handle_provision_command(command)) return;
   if (handle_configuration_transaction(command)) return;
@@ -517,6 +528,8 @@ void setup() {
   Serial.println("{\"type\":\"boot\",\"step\":\"serial\"}");
   StoreStatus nvm_status = application_nvm.initialize();
   if (nvm_status == StoreStatus::Ok) {
+    bool recovered_reset = false;
+    reset_recovery_status = factory_reset_controller.recover_on_boot(&recovered_reset);
     identity_store_status = node_identity_store.load(&active_identity);
     StoredChannelConfiguration stored = {};
     configuration_store_status = runtime_configuration_store.load(&stored);
@@ -534,6 +547,10 @@ void setup() {
     identity_store_status = nvm_status;
     configuration_store_status = nvm_status;
   }
+  const bool identity_valid = identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious;
+  const bool configuration_valid = configuration_store_status == StoreStatus::Ok
+      || configuration_store_status == StoreStatus::RecoveredFromPrevious || configuration_store_status == StoreStatus::NotFound;
+  bootstrap_only = reset_recovery_status != StoreStatus::Ok || !identity_valid || !configuration_valid;
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(IMU_POWER_PIN, OUTPUT);
@@ -812,6 +829,11 @@ void loop() {
       if (!serial_overflow && serial_length) {
         serial_line[serial_length] = '\0';
         if (!usb_bootstrap.handle_line(serial_line, Serial, millis())) handle_command(String(serial_line));
+        if (factory_reset_controller.reboot_required()) {
+          memset(&active_identity, 0, sizeof(active_identity)); identity_store_status = StoreStatus::Unprovisioned;
+          microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; microphone_channel.reconfigure(&microphone_runtime_config);
+          offline_buffer.clear(); bootstrap_only = true; Serial.flush(); delay(50); systemReset();
+        }
       } else if (serial_overflow) {
         Serial.println("MG24BOOT1 {\"type\":\"bootstrap_response\",\"schema_version\":1,\"request_id\":\"unknown\",\"action\":\"unknown\",\"status\":\"error\",\"error_code\":\"line_too_large\"}");
       }
@@ -820,6 +842,7 @@ void loop() {
     else serial_overflow = true;
   }
 
+  if (bootstrap_only) { delay(5); return; }
   update_microphone();
 
   const uint32_t now = millis();

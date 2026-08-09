@@ -20,6 +20,7 @@ from gateway.app.api import (
     installations,
     nodes,
     profiles,
+    reset_reregister,
     telemetry,
 )
 from gateway.app.ble.manager import BleManager
@@ -150,6 +151,8 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.device_configuration_results = {}
     app.state.lifecycle_confirmations = LifecycleConfirmationStore()
     app.state.usb_factory_reset = UsbFactoryResetService()
+    # Reset confirmation material is deliberately process-local and never persisted or returned in status APIs.
+    app.state.reregister_confirmations = {}
     configurator = (
         BlePersistentConfigurator(session_factory, app.state.node_provisioner, lambda: app.state.ble_manager)
         if client_factory is None
@@ -168,6 +171,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.include_router(devices.router)
     app.include_router(device_lifecycle.router)
     app.include_router(factory_reset.router)
+    app.include_router(reset_reregister.router)
     app.include_router(commands.router)
     app.include_router(telemetry.router)
     app.include_router(telemetry.ws_router)

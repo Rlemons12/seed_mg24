@@ -126,6 +126,36 @@ class DeviceLifecycleEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
 
+class SensorReregistrationWorkflow(Base):
+    """Durable, non-secret state for the reset-and-re-register operator workflow."""
+
+    __tablename__ = "sensor_reregistration_workflows"
+
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source_record_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    source_device_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    source_display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    hardware_id: Mapped[str] = mapped_column(String(18), nullable=False, index=True)
+    source_ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    state: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    selected_port: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reset_operation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    backup_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    backup_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registration_choice: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    target_device_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    target_display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    target_location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    target_ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    configuration_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class NodeFirmwareHistory(Base):
     __tablename__ = "node_firmware_history"
     __table_args__ = (Index("ix_firmware_history_node_seen", "node_id", "last_seen_at"),)

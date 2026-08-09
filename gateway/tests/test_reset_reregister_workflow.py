@@ -96,6 +96,10 @@ def test_workflow_endpoints_enforce_same_origin_and_usb_loopback(client, app, co
     response = client.post(f"/api/reset-reregister/{operation['operation_id']}/detect-usb", json={},
                            headers={"X-Forwarded-For": "127.0.0.1"})
     assert response.status_code == 403
+    oversized = client.request("POST", "/api/reset-reregister/start", content=b'{' + b'"x":"' + b'a' * 5000 + b'"}',
+                               headers={"Content-Type": "application/json", "Origin": "http://testserver"})
+    assert oversized.status_code == 413
+    assert client.get(f"/api/reset-reregister/{operation['operation_id']}").status_code == 200
 
 
 def test_dashboard_wizard_is_focused_accessible_and_keeps_separate_actions():

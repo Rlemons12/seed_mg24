@@ -4,7 +4,9 @@ This repository contains firmware for Seeed Studio XIAO MG24 Sense sensor nodes,
 
 Finished sensor products are shipped with production firmware and an unassigned commissioning state. The local dashboard can assign their permanent `node_id`, persist supported configuration over BLE, read it back, and activate an installation only after live telemetry is verified. A blank development board still needs USB, but the loopback-only dashboard firmware service installs only a hash-verified application package selected by hardware serial; it accepts neither paths nor uploader arguments from the browser.
 
-Identity and operational configuration use separate redundant NVM3 records. Ordinary BLE onboarding is write-once for identity. Only the USB recovery protocol exposes allowlisted `configuration_only` and `application_factory` reset scopes; neither is a chip erase. See `sensor_package/docs/device-identity.md`.
+Identity and operational configuration use separate redundant NVM3 records. Ordinary BLE onboarding is write-once for identity. Only the USB recovery protocol exposes the allowlisted `application_factory` reset scope; it is not a chip erase. See `sensor_package/docs/device-identity.md`.
+
+Gateway removal, explicit restoration, and physical factory reset are distinct workflows. Removal preserves telemetry and device firmware/configuration; factory reset is USB-only and preserves telemetry, firmware, hardware identity, and platform storage. See [`docs/sensor-lifecycle.md`](docs/sensor-lifecycle.md).
 
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 

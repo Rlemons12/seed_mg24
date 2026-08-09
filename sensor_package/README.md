@@ -8,7 +8,7 @@ Production firmware is flashed initially with an unassigned runtime identity. As
 
 PowerShell: `./sensor_package/scripts/compile.ps1`, then—only after reviewing the physical-write checkpoint—`./sensor_package/scripts/flash.ps1 -Port COM3`. Linux equivalents use `compile.sh` and `flash.sh`. The FQBN includes `protocol_stack=ble_silabs`; neither wrapper performs an erase or provisions identity.
 
-Read-only state: `./sensor_package/scripts/read_node.ps1 -Port COM3`. Initial identity: `provision_node.ps1 -Port COM3 -NodeId MG24-0001`. Use `backup_node.ps1`, `restore_node.ps1`, and `verify_node.ps1` for application state. `factory_reset.ps1` defaults to prepare/cancel; `-Confirm` requires typing the exact scope and uses the device's short-lived challenge. Backups belong under ignored `test_output/` or another protected deployment directory.
+Read-only state: `./sensor_package/scripts/read_node.ps1 -Port COM3`. Initial identity: `provision_node.ps1 -Port COM3 -NodeId MG24-0001`. Use `backup_node.ps1`, `restore_node.ps1`, and `verify_node.ps1` for application state. List attached boards with `list_nodes.ps1`. Factory reset requires an explicit port and immutable hardware ID; `factory_reset.ps1 -Port COM3 -HardwareId 0x0123456789ABCDEF -Confirm` then requires typing that exact hardware ID and uses a short-lived hardware-bound challenge. Backups belong under ignored `test_output/` or another protected deployment directory. See [`../docs/sensor-lifecycle.md`](../docs/sensor-lifecycle.md) for reset recovery and preserved data.
 
 Install the independent host-tool dependency with `python -m pip install -r sensor_package/requirements.txt` (`pyserial==3.5`).
 

@@ -61,10 +61,19 @@ explicitly choose one of these registration paths:
 * **Register as a new sensor** creates a new active record after provisioning. The prior record and its historical
   telemetry remain archived; readings are not silently reassociated.
 
-BLE onboarding currently does not expose the immutable MCU hardware ID in its discovery metadata. The wizard therefore
-shows every unprovisioned candidate, never chooses among multiple candidates, and requires explicit physical
-correlation. USB identity remains authoritative. Adding a hardware-ID field to the authenticated/bootstrap BLE
-onboarding protocol would remove this remaining correlation limitation.
+BLE onboarding exposes a dedicated read-only, connected GATT correlation value only in unprovisioned or safe recovery
+mode. It is the first 128 bits of SHA-256 over the domain `MG24-ONBOARDING-V1` and the canonical immutable USB hardware
+ID. The gateway derives the expected value from its USB read-back and accepts only an exact match. BLE address, RSSI,
+mutable sensor ID, scan order, and manual selection cannot establish identity. Multiple devices claiming the same value
+cause a fail-closed ambiguity result. After provisioning, the characteristic returns only a versioned `provisioned`
+state without the identity.
+
+The derived value is not a secret or authenticator: anyone connected to an unprovisioned sensor can read it and could
+track that sensor while it remains in bootstrap mode. It is intentionally absent from advertisements, unavailable in
+normal production operation, and cannot authorize provisioning or reset. The existing unprovisioned-state checks,
+transactional provisioning protocol, USB-only reset boundary, and dashboard protections remain authoritative. A
+malicious device can copy a correlation value it has learned, so duplicate claims are blocked; this mechanism proves
+continuity for genuine project firmware but is not cryptographic device attestation.
 
 Completion requires an active matching gateway record, managed BLE connection, and a telemetry or heartbeat received
 after the workflow began. Until then the truthful result is **Registered—waiting for first telemetry**, with Retry

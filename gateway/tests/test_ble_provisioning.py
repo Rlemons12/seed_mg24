@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from gateway.app.ble.constants import CAPABILITIES_UUID, METADATA_UUID, TELEMETRY_UUID
+from gateway.app.ble.constants import CAPABILITIES_UUID, METADATA_UUID, ONBOARDING_IDENTITY_UUID, TELEMETRY_UUID
+from gateway.app.ble.onboarding_identity import derive_onboarding_identity
 from gateway.app.services.ble_provisioning import BleNodeProvisioner, BleProvisioningError
 
 
@@ -20,6 +21,12 @@ class FakeClient:
             return json.dumps({"node_id": self.node_id, "protocol_version": "1.0.0"}).encode()
         if uuid == CAPABILITIES_UUID:
             return json.dumps({"configuration": {"readback": True}}).encode()
+        if uuid == ONBOARDING_IDENTITY_UUID:
+            payload = {"schema_version": 1, "provisioning_state": "provisioned", "protocol_version": "1.0.0"}
+            if self.node_id == "UNASSIGNED-MG24":
+                payload.update(onboarding_identity=derive_onboarding_identity("0x0123456789ABCDEF"),
+                               provisioning_state="unprovisioned", firmware_version="0.1.0")
+            return json.dumps(payload).encode()
         raise AssertionError(uuid)
     async def start_notify(self, uuid, callback): assert uuid == TELEMETRY_UUID; self.callback = callback
     async def stop_notify(self, uuid): assert uuid == TELEMETRY_UUID
@@ -50,6 +57,26 @@ async def test_real_ble_transaction_provisions_and_verifies_readback():
     client = FakeClient("address")
     result = await BleNodeProvisioner(lambda _: client).provision("address", "MG24-0001", "abcdef0123456789", CONFIG)
     assert result["readback"]["id"] == "MG24-0001"
+
+
+@pytest.mark.asyncio
+async def test_hardware_bound_provisioning_verifies_identity_before_and_hides_it_after():
+    client = FakeClient("address")
+    expected = derive_onboarding_identity("0x0123456789ABCDEF")
+    result = await BleNodeProvisioner(lambda _: client).provision(
+        "address", "MG24-0001", "abcdef0123456789", CONFIG, expected_onboarding_identity=expected)
+    assert result["onboarding_after"] == {
+        "schema_version": 1, "provisioning_state": "provisioned", "protocol_version": "1.0.0"}
+
+
+@pytest.mark.asyncio
+async def test_hardware_bound_provisioning_rejects_mismatch_before_write():
+    client = FakeClient("address")
+    with pytest.raises(BleProvisioningError, match="no longer matches"):
+        await BleNodeProvisioner(lambda _: client).provision(
+            "address", "MG24-0001", "abcdef0123456789", CONFIG,
+            expected_onboarding_identity="0" * 32)
+    assert client.node_id == "UNASSIGNED-MG24"
 
 
 @pytest.mark.asyncio

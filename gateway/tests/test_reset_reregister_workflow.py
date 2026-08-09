@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
+from types import MethodType
 
 from sqlalchemy import func, select
 
+from gateway.app.ble.onboarding_identity import derive_onboarding_identity
 from gateway.app.models import Reading, SensorReregistrationWorkflow
 from gateway.app.repositories.device_repository import DeviceRepository
 
@@ -114,3 +116,66 @@ def test_dashboard_wizard_is_focused_accessible_and_keeps_separate_actions():
     assert "Remove from network" in app_script and "Restore/Reapprove" in app_script
     assert "Factory Reset Sensor" in app_script and "Reset and Re-register" in app_script
     assert "reset_reregister.js" in template
+
+
+def prepare_ble_workflow(client, app, discovery):
+    register_with_identity(client, app, discovery)
+    operation = client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"}).json()
+    with app.state.session_factory() as session:
+        row = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        row.state = "searching_for_reset_sensor_ble"
+        session.commit()
+
+    async def start_scan(_self): return True
+    async def wait_for_scan(_self): return None
+    app.state.scanner.start_scan = MethodType(start_scan, app.state.scanner)
+    app.state.scanner.wait_for_scan = MethodType(wait_for_scan, app.state.scanner)
+    return operation
+
+
+def test_ble_scan_selects_only_exact_usb_identity_and_ignores_rssi(client, app, compatible_discovery):
+    operation = prepare_ble_workflow(client, app, compatible_discovery)
+    wrong = compatible_discovery.model_copy(update={"address": "AA:BB:CC:DD:EE:99", "rssi": -5})
+    app.state.scanner.record(wrong)
+    expected = derive_onboarding_identity("0x0123456789ABCDEF")
+
+    class Provisioner:
+        async def read_onboarding_identity(self, address):
+            identity = expected if address == compatible_discovery.address else "0" * 32
+            return {"schema_version": 1, "onboarding_identity": identity, "provisioning_state": "unprovisioned",
+                    "protocol_version": "1.0.0", "firmware_version": "0.1.0"}
+
+    app.state.node_provisioner = Provisioner()
+    response = client.post(f"/api/reset-reregister/{operation['operation_id']}/scan-ble", json={})
+    assert response.status_code == 200 and response.json()["state"] == "ble_identity_matched"
+    candidates = {row["address"]: row for row in response.json()["candidates"]}
+    assert candidates[compatible_discovery.address]["verification_status"] == "verified_match"
+    assert candidates[wrong.address]["verification_status"] == "non_match"
+    assert not candidates[wrong.address]["provisioning_allowed"]
+
+
+def test_duplicate_claimed_identity_blocks_and_manual_selection_cannot_bypass(client, app, compatible_discovery):
+    operation = prepare_ble_workflow(client, app, compatible_discovery)
+    duplicate = compatible_discovery.model_copy(update={"address": "AA:BB:CC:DD:EE:88", "rssi": -20})
+    app.state.scanner.record(duplicate)
+    expected = derive_onboarding_identity("0x0123456789ABCDEF")
+
+    class DuplicateProvisioner:
+        async def read_onboarding_identity(self, _address):
+            return {"schema_version": 1, "onboarding_identity": expected, "provisioning_state": "unprovisioned",
+                    "protocol_version": "1.0.0", "firmware_version": "0.1.0"}
+
+    app.state.node_provisioner = DuplicateProvisioner()
+    scanned = client.post(f"/api/reset-reregister/{operation['operation_id']}/scan-ble", json={})
+    assert scanned.status_code == 200 and scanned.json()["state"] == "searching_for_reset_sensor_ble"
+    assert {row["verification_status"] for row in scanned.json()["candidates"]} == {"duplicate_identity"}
+
+    class MismatchProvisioner:
+        async def read_onboarding_identity(self, _address):
+            return {"schema_version": 1, "onboarding_identity": "f" * 32, "provisioning_state": "unprovisioned",
+                    "protocol_version": "1.0.0", "firmware_version": "0.1.0"}
+
+    app.state.node_provisioner = MismatchProvisioner()
+    selected = client.post(f"/api/reset-reregister/{operation['operation_id']}/select-ble",
+                           json={"address": compatible_discovery.address})
+    assert selected.status_code == 409 and selected.json()["detail"]["code"] == "ble_identity_mismatch"

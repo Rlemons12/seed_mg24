@@ -65,7 +65,9 @@ class DeviceLifecycleService:
                 display_name=device.display_name, hardware_id=device.hardware_id, ble_address=device.ble_address,
                 connectivity_state=connectivity_state, method=method,
                 factory_reset_requested=factory_reset_requested, result="success",
-                detail_json=json.dumps({"reason": reason, "installations_archived": len(installations)}, separators=(",", ":")),
+                detail_json=json.dumps(
+                    {"reason_recorded": bool(reason), "installations_archived": len(installations)}, separators=(",", ":")
+                ),
             ))
             self.session.commit()
         except Exception:

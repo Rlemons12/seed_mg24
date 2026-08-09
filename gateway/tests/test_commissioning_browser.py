@@ -73,6 +73,8 @@ def dashboard_page():
                     "connection_status": "connected", "compatibility_status": "compatible",
                     "firmware_version": "0.1.0", "protocol_version": "1.0.0",
                 }]))
+            elif path.endswith("/api/device-lifecycle/removed"):
+                request.fulfill(status=200, content_type="application/json", body="[]")
             elif path.endswith("/api/devices/MG24-0002/readings/latest"):
                 request.fulfill(status=200, content_type="application/json", body=json.dumps([
                     {"channel": "analog_1", "normalized_value": 415, "unit": "adc_count",

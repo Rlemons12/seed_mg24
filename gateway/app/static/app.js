@@ -1,6 +1,6 @@
 "use strict";
 
-const state = { nodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, draftId: null, commissioningActive: false };
+const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, draftId: null, commissioningActive: false };
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -49,13 +49,13 @@ function updateCommissioningSubmit() {
 }
 
 async function refresh() {
-  [state.nodes, state.installations, state.profiles] = await Promise.all([api("/api/nodes"), api("/api/sensor-installations"), api("/api/sensor-profiles")]);
+  [state.nodes, state.removedNodes, state.installations, state.profiles] = await Promise.all([api("/api/nodes"), api("/api/device-lifecycle/removed"), api("/api/sensor-installations"), api("/api/sensor-profiles")]);
   const readings = await Promise.all(state.nodes.map(async(node)=>{
     try { return [node.node_id, await api(`/api/devices/${encodeURIComponent(node.node_id)}/readings/latest`)]; }
     catch (_) { return [node.node_id, []]; }
   }));
   state.readings = Object.fromEntries(readings);
-  renderNodes(); renderInstallations();
+  renderNodes(); renderRemovedNodes(); renderInstallations();
 }
 
 function inputName(channel) { return channel.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
@@ -113,13 +113,65 @@ function renderNodes() {
     const configure = el("button", "Configure");
     configure.type = "button";
     configure.addEventListener("click", () => openDeviceConfiguration(node).catch((error) => notice(error.message)));
-    actions.append(reconnect, configure);
+    const remove = el("button", "Remove from network", "danger");
+    remove.type = "button";
+    remove.addEventListener("click", () => openLifecycle("remove", node));
+    actions.append(reconnect, configure, remove);
     details.append(actions);
     card.append(heading, details);
     list.append(card);
   });
   if (!state.nodes.length) list.append(el("p", "No sensor nodes are registered.", "muted"));
 }
+
+function renderRemovedNodes() {
+  const list = $("removed-node-list");
+  list.replaceChildren();
+  state.removedNodes.forEach((node) => {
+    const card = el("article", undefined, "device-card");
+    card.append(el("h3", node.display_name), el("div", node.device_id, "equipment-id"),
+      el("p", `Removed ${time(node.removed_at)}. Historical telemetry is retained.`, "muted"));
+    const restore = el("button", "Restore/Reapprove");
+    restore.type = "button";
+    restore.addEventListener("click", () => openLifecycle("restore", node));
+    card.append(restore); list.append(card);
+  });
+  if (!state.removedNodes.length) list.append(el("p", "No removed sensor registrations.", "muted"));
+}
+
+async function openLifecycle(operation, node) {
+  const prepared = await api("/api/device-lifecycle/confirm", {method:"POST", body:JSON.stringify({
+    operation, device_id:node.node_id || node.device_id, expected_hardware_id:node.hardware_id || null,
+  })});
+  state.lifecycle = prepared;
+  $("lifecycle-title").textContent = operation === "remove" ? "Remove from network" : "Restore/Reapprove sensor";
+  $("lifecycle-identity").textContent = `${prepared.display_name} — ${prepared.device_id}; hardware ${prepared.hardware_id || "not yet reported"}; BLE ${prepared.ble_address || "unknown"}; ${prepared.connection_status}.`;
+  $("lifecycle-warning").textContent = operation === "remove"
+    ? "This removes gateway membership and stops reconnection. It does not factory-reset the physical sensor. The still-provisioned sensor may continue advertising. Historical telemetry remains available."
+    : "This explicitly reapproves the existing registration and retained history. It does not alter or factory-reset the physical sensor.";
+  $("lifecycle-confirm-id").value = ""; $("lifecycle-execute").disabled = true;
+  $("lifecycle-dialog").showModal();
+}
+
+$("lifecycle-confirm-id").addEventListener("input", () => {
+  $("lifecycle-execute").disabled = !state.lifecycle || $("lifecycle-confirm-id").value !== state.lifecycle.device_id;
+});
+$("lifecycle-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!state.lifecycle || $("lifecycle-confirm-id").value !== state.lifecycle.device_id) return;
+  const pending = state.lifecycle; $("lifecycle-execute").disabled = true;
+  try {
+    const result = await api("/api/device-lifecycle/execute", {method:"POST", body:JSON.stringify({
+      confirmation_token:pending.confirmation_token, operation:pending.operation, device_id:pending.device_id,
+      expected_hardware_id:pending.hardware_id, expected_ble_address:pending.ble_address,
+      reason:pending.operation === "remove" ? "operator_confirmed_dashboard_removal" : null,
+    })});
+    $("lifecycle-dialog").close(); state.lifecycle = null;
+    notice(result.lifecycle_state === "removed" ? "Sensor removed from this gateway. Physical sensor and telemetry history were preserved." : "Sensor registration restored and reapproved.");
+    await refresh();
+  } catch (error) { notice(error.message); $("lifecycle-execute").disabled = false; }
+});
+document.querySelector('[data-action="close-lifecycle"]').addEventListener("click",()=>{$("lifecycle-dialog").close();state.lifecycle=null;});
 
 async function openDeviceConfiguration(node) { state.selectedConfigNode=node.node_id; const current=await api(`/api/nodes/${encodeURIComponent(node.node_id)}/configuration`); $("device-config-title").textContent=`Configure ${node.display_name}`; $("device-cfg-sample").value=current.sample_interval_ms; $("device-cfg-processing").value=current.processing_interval_ms; $("device-cfg-report").value=current.report_interval_ms; $("device-cfg-heartbeat").value=current.heartbeat_interval_ms; $("device-cfg-filter").value=current.filter_type; $("device-cfg-window").value=current.filter_window; $("device-config-summary").textContent="Current persisted settings read from the sensor. Apply performs one write followed by authoritative readback."; $("device-config-dialog").showModal(); }
 

@@ -30,3 +30,17 @@ The NVM read diagnostic is intentionally read-only at the application level.
 It must not gain provisioning, reset, delete, or write operations. Status
 values report persistence health without printing stored identity or
 configuration contents.
+
+Compile it for the XIAO MG24 Sense with the Silicon Labs BLE stack enabled:
+
+```powershell
+arduino-cli compile `
+  --fqbn "SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs" `
+  --build-path sensor_package/build_diagnostic_nvm_read `
+  --build-property "compiler.cpp.extra_flags=-I$((Resolve-Path sensor_package/firmware/xiao_mg24_sensor_node).Path)" `
+  sensor_package/firmware/diagnostics/xiao_mg24_nvm_read_diagnostic
+```
+
+The sketch reuses the production persistence implementation directly. On a
+board it reports structured backend, identity, and configuration status over
+USB serial and `Serial1`, plus a heartbeat. It never prints record contents.

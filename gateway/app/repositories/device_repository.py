@@ -32,6 +32,13 @@ class DeviceRepository:
     def get_by_hardware_id(self, hardware_id: str) -> RegisteredDevice | None:
         return self.session.scalar(select(RegisteredDevice).where(RegisteredDevice.hardware_id == hardware_id))
 
+    def get_other_by_hardware_id(self, hardware_id: str, record_id: int) -> RegisteredDevice | None:
+        return self.session.scalar(
+            select(RegisteredDevice).where(
+                RegisteredDevice.hardware_id == hardware_id, RegisteredDevice.id != record_id
+            )
+        )
+
     def create(self, **values) -> RegisteredDevice:
         device = RegisteredDevice(**values)
         self.session.add(device)

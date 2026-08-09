@@ -37,7 +37,7 @@ class RegisteredDevice(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connection_status: Mapped[str] = mapped_column(String(32), nullable=False, default="disconnected")
-    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True, unique=True, index=True)
+    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True, index=True)
     lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     removal_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)

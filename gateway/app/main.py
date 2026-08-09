@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -39,6 +38,7 @@ from gateway.app.models import utc_now
 from gateway.app.profiles.registry import ProfileRegistry
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.repositories.firmware_repository import FirmwareHistoryRepository
+from gateway.app.request_security import require_bounded_same_origin_json
 from gateway.app.services.ble_provisioning import BleNodeProvisioner
 from gateway.app.services.compatibility_service import CompatibilityService
 from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, UsbFirmwareInstaller
@@ -123,18 +123,16 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     @app.middleware("http")
     async def protect_lifecycle_requests(request: Request, call_next):
         protected_post = request.url.path in {"/api/device-lifecycle/confirm", "/api/device-lifecycle/execute",
-                                              "/api/factory-reset/confirm", "/api/factory-reset/execute"}
+                                              "/api/device-lifecycle/cancel",
+                                              "/api/factory-reset/confirm", "/api/factory-reset/execute",
+                                              "/api/factory-reset/cancel"} or (
+            request.url.path.startswith("/api/factory-reset/operations/") and request.url.path.endswith("/retry-cleanup")
+        )
         if protected_post:
-            if request.method != "POST":
-                return JSONResponse(status_code=405, content={"error": "method_not_allowed", "detail": "POST is required."})
-            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if content_type != "application/json":
-                return JSONResponse(status_code=415, content={"error": "json_required", "detail": "application/json is required."})
-            origin = request.headers.get("origin")
-            if not origin and (not request.client or request.client.host != "testclient"):
-                return JSONResponse(status_code=403, content={"error": "same_origin_required", "detail": "Origin is required."})
-            if origin and urlsplit(origin).hostname != request.url.hostname:
-                return JSONResponse(status_code=403, content={"error": "same_origin_required", "detail": "Cross-origin request denied."})
+            try:
+                require_bounded_same_origin_json(request)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"error": "request_error", "detail": exc.detail})
         return await call_next(request)
 
     @app.middleware("http")

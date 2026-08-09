@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from sqlalchemy import func, select
 from gateway.app.models import DeviceLifecycleEvent, Reading, SensorInstallation
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.services.device_lifecycle_service import DeviceLifecycleService
+from gateway.app.services.lifecycle_confirmation import LifecycleConfirmationStore
 
 
 def register(client, discovery):
@@ -17,15 +19,23 @@ def register(client, discovery):
 
 
 def confirmation(client, operation):
-    response = client.post("/api/device-lifecycle/confirm", json={"operation": operation, "device_id": "MG24-0001"})
+    body = {"operation": operation, "device_id": "MG24-0001"}
+    if operation == "restore":
+        removed = client.get("/api/device-lifecycle/removed").json()[0]
+        body.update(expected_hardware_id=removed["hardware_id"], expected_ble_address=removed["ble_address"])
+    response = client.post("/api/device-lifecycle/confirm", json=body)
     assert response.status_code == 200
     return response.json()["confirmation_token"]
 
 
 def execute(client, operation, token):
-    return client.post("/api/device-lifecycle/execute", json={
+    body = {
         "operation": operation, "device_id": "MG24-0001", "confirmation_token": token,
-    })
+    }
+    if operation == "restore":
+        removed = client.get("/api/device-lifecycle/removed").json()[0]
+        body.update(expected_hardware_id=removed["hardware_id"], expected_ble_address=removed["ble_address"])
+    return client.post("/api/device-lifecycle/execute", json=body)
 
 
 def seed_history_and_installation(app):
@@ -70,6 +80,30 @@ def test_removal_is_idempotent_and_confirmation_is_single_use(client, compatible
     assert execute(client, "remove", token).status_code == 409
     second = execute(client, "remove", confirmation(client, "remove"))
     assert second.status_code == 200 and second.json()["already_applied"] is True
+
+
+def test_confirmation_token_has_only_one_concurrent_consumer():
+    store = LifecycleConfirmationStore()
+    token = store.issue("remove", 7, "MG24-0001", "0x0123456789ABCDEF", "AA:BB")
+
+    def consume():
+        try:
+            store.consume(token, "remove", 7, "MG24-0001", "0x0123456789ABCDEF", "AA:BB")
+            return "accepted"
+        except ValueError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(lambda _index: consume(), range(2))) == ["accepted", "rejected"]
+
+
+def test_expired_confirmation_is_consumed():
+    store = LifecycleConfirmationStore(ttl_seconds=0)
+    token = store.issue("remove", 7, "MG24-0001", None, "AA:BB")
+    with pytest.raises(ValueError, match="expired"):
+        store.consume(token, "remove", 7, "MG24-0001", None, "AA:BB")
+    with pytest.raises(ValueError, match="already used"):
+        store.consume(token, "remove", 7, "MG24-0001", None, "AA:BB")
 
 
 def test_remove_offline_sensor(client, app, compatible_discovery):
@@ -136,6 +170,14 @@ def test_lifecycle_requires_json_and_same_origin(client, compatible_discovery):
         "/api/device-lifecycle/confirm", json={"operation": "remove", "device_id": "MG24-0001"},
         headers={"Origin": "https://evil.example"},
     ).status_code == 403
+    assert client.post(
+        "/api/device-lifecycle/confirm", json={"operation": "remove", "device_id": "MG24-0001"},
+        headers={"Origin": ""},
+    ).status_code == 403
+    assert client.post(
+        "/api/device-lifecycle/confirm", content=b"{}" * 3000,
+        headers={"Content-Type": "application/json", "Origin": "http://testserver"},
+    ).status_code == 413
 
 
 def test_unknown_device_and_hardware_mismatch_are_rejected(client, app, compatible_discovery):
@@ -148,6 +190,17 @@ def test_unknown_device_and_hardware_mismatch_are_rejected(client, app, compatib
     response = client.post("/api/device-lifecycle/confirm", json={
         "operation": "restore", "device_id": "MG24-0001", "expected_hardware_id": "0xFEDCBA9876543210",
     })
+    assert response.status_code == 409
+
+
+def test_restore_rejects_omitted_stored_identity(client, app, compatible_discovery):
+    register(client, compatible_discovery)
+    with app.state.session_factory() as session:
+        device = DeviceRepository(session).get("MG24-0001")
+        device.hardware_id = "0x0123456789ABCDEF"
+        session.commit()
+    execute(client, "remove", confirmation(client, "remove"))
+    response = client.post("/api/device-lifecycle/confirm", json={"operation": "restore", "device_id": "MG24-0001"})
     assert response.status_code == 409
 
 

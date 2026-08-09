@@ -79,10 +79,18 @@ class DeviceLifecycleService:
             raise LifecycleError("device_not_found", "Removed sensor registration was not found.")
         if not device.archived and device.lifecycle_state == "active":
             return LifecycleResult("existing", "active", device_id, "active", True)
-        if expected_hardware_id and device.hardware_id and expected_hardware_id != device.hardware_id:
+        if device.hardware_id and expected_hardware_id != device.hardware_id:
             raise LifecycleError("hardware_identity_mismatch", "Physical hardware identity does not match the removed sensor.")
-        if expected_ble_address and device.ble_address and expected_ble_address.casefold() != device.ble_address.casefold():
+        if device.ble_address and (
+            not expected_ble_address or expected_ble_address.casefold() != device.ble_address.casefold()
+        ):
             raise LifecycleError("ble_identity_mismatch", "BLE address does not match the removed sensor registration.")
+        if device.hardware_id:
+            conflict = self.devices.get_other_by_hardware_id(device.hardware_id, device.id)
+            if conflict is not None:
+                raise LifecycleError(
+                    "hardware_identity_conflict", "Hardware identity is associated with another sensor record; resolve it first."
+                )
         operation_id = uuid4().hex
         try:
             device.archived = False

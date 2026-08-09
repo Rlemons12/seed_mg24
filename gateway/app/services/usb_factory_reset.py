@@ -1,6 +1,7 @@
 import asyncio
 import secrets
 from dataclasses import dataclass, field
+from threading import Lock
 from time import monotonic
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ class UsbResetError(ValueError):
 
 @dataclass
 class UsbResetOperation:
+    record_id: int
     operation_id: str
     device_id: str
     hardware_id: str
@@ -36,7 +38,8 @@ class UsbFactoryResetService:
         self.ports_factory = ports_factory or list_ports.comports
         self.reboot_timeout = reboot_timeout
         self.operations: dict[str, UsbResetOperation] = {}
-        self._confirmations: dict[str, tuple[str, str, str, float]] = {}
+        self._confirmations: dict[str, tuple[int, str, str, str, str, float]] = {}
+        self._confirmation_lock = Lock()
         self._locks: dict[str, asyncio.Lock] = {}
 
     def ports(self) -> list[dict]:
@@ -56,22 +59,33 @@ class UsbFactoryResetService:
             raise UsbResetError("sensor did not report a valid immutable hardware identity")
         return {**matches[0], **state}
 
-    def prepare(self, device_id: str, hardware_id: str, port: str) -> tuple[str, dict]:
+    def prepare(self, record_id: int, device_id: str, hardware_id: str, port: str) -> tuple[str, dict]:
         state = self.inspect(port)
         if state.get("hardware_id") != hardware_id or state.get("node_id") != device_id:
             raise UsbResetError("connected physical sensor does not match the selected gateway sensor")
         token = secrets.token_urlsafe(32)
-        self._confirmations[token] = (device_id, hardware_id, port, monotonic() + 120)
+        with self._confirmation_lock:
+            self._confirmations[token] = (
+                record_id, device_id, hardware_id, "application_factory", port, monotonic() + 120
+            )
         return token, state
 
-    def start(self, token: str, device_id: str, hardware_id: str, port: str) -> UsbResetOperation:
-        pending = self._confirmations.pop(token, None)
-        if pending is None or pending[:3] != (device_id, hardware_id, port) or pending[3] <= monotonic():
+    def cancel(self, token: str, record_id: int, device_id: str, hardware_id: str, port: str) -> None:
+        with self._confirmation_lock:
+            pending = self._confirmations.pop(token, None)
+        if pending is None or pending[:5] != (record_id, device_id, hardware_id, "application_factory", port):
+            raise UsbResetError("factory-reset confirmation is missing, expired, reused, or mismatched")
+
+    def start(self, token: str, record_id: int, device_id: str, hardware_id: str, port: str) -> UsbResetOperation:
+        with self._confirmation_lock:
+            pending = self._confirmations.pop(token, None)
+        expected = (record_id, device_id, hardware_id, "application_factory", port)
+        if pending is None or pending[:5] != expected or pending[5] <= monotonic():
             raise UsbResetError("factory-reset confirmation is missing, expired, reused, or mismatched")
         lock = self._locks.setdefault(hardware_id, asyncio.Lock())
         if lock.locked():
             raise UsbResetError("a reset operation is already active for this physical sensor")
-        operation = UsbResetOperation(uuid4().hex, device_id, hardware_id, port)
+        operation = UsbResetOperation(record_id, uuid4().hex, device_id, hardware_id, port)
         self.operations[operation.operation_id] = operation
         asyncio.create_task(self._run(operation, lock))
         return operation
@@ -95,6 +109,8 @@ class UsbFactoryResetService:
                         expected_hardware_id=operation.hardware_id, operation_id=prepared["operation_id"],
                         challenge=prepared["challenge"],
                     )["result"]
+                if accepted.get("operation_id") != prepared.get("operation_id"):
+                    raise UsbResetError("reset operation correlation mismatch")
                 operation.state = "rebooting"
                 operation.progress.append("pre_reboot_key_deletion_verified")
                 deadline = monotonic() + self.reboot_timeout
@@ -113,14 +129,12 @@ class UsbFactoryResetService:
                     raise UsbResetError("same physical sensor did not re-enumerate")
                 if verified.get("node_id") is not None or verified.get("identity_status") != "unprovisioned":
                     raise UsbResetError("post-reset sensor is not unprovisioned")
-                if verified.get("firmware_version") != before.get("firmware_version"):
+                if not before.get("firmware_version") or verified.get("firmware_version") != before.get("firmware_version"):
                     raise UsbResetError("installed firmware changed during reset")
                 operation.post_reset = verified
                 operation.physical_reset_complete = True
                 operation.state = "physical_complete"
                 operation.progress.extend(["same_hardware_reenumerated", "post_reset_unprovisioned_verified"])
-                if accepted.get("operation_id") != prepared.get("operation_id"):
-                    raise UsbResetError("reset operation correlation mismatch")
             except Exception as exc:
                 operation.state = "failed"
                 operation.error = str(exc)[:500]

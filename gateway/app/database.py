@@ -55,6 +55,7 @@ def migrate_existing_database(engine: Engine) -> None:
             "configuration_schema_version": "INTEGER", "build_identifier": "VARCHAR(96)",
             "firmware_git_commit": "VARCHAR(64)", "compatibility_status": "VARCHAR(32)",
             "compatibility_message": "VARCHAR(500)",
+            "enabled": "BOOLEAN NOT NULL DEFAULT 1", "archived": "BOOLEAN NOT NULL DEFAULT 0",
             "hardware_id": "VARCHAR(18)", "lifecycle_state": "VARCHAR(32) NOT NULL DEFAULT 'active'",
             "removed_at": "DATETIME", "removal_reason": "VARCHAR(240)",
             "factory_reset_status": "VARCHAR(32) NOT NULL DEFAULT 'not_requested'",
@@ -63,9 +64,28 @@ def migrate_existing_database(engine: Engine) -> None:
             for name, sql_type in additions.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE registered_devices ADD COLUMN {name} {sql_type}"))
+            # Older/partially upgraded databases may already contain duplicate hardware IDs. Keep them readable,
+            # index lookups, and prevent any *new* duplicate active membership without blocking startup.
+            connection.execute(text("DROP INDEX IF EXISTS ix_registered_devices_hardware_id"))
             connection.execute(
-                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_registered_devices_hardware_id ON registered_devices (hardware_id)")
+                text("CREATE INDEX IF NOT EXISTS ix_registered_devices_hardware_id ON registered_devices (hardware_id)")
             )
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS trg_registered_devices_hardware_insert
+                BEFORE INSERT ON registered_devices
+                WHEN NEW.hardware_id IS NOT NULL AND NEW.hardware_id <> '' AND NEW.archived = 0
+                  AND EXISTS (SELECT 1 FROM registered_devices
+                              WHERE hardware_id = NEW.hardware_id AND archived = 0)
+                BEGIN SELECT RAISE(ABORT, 'active hardware_id already registered'); END
+            """))
+            connection.execute(text("""
+                CREATE TRIGGER IF NOT EXISTS trg_registered_devices_hardware_update
+                BEFORE UPDATE OF hardware_id, archived, lifecycle_state ON registered_devices
+                WHEN NEW.hardware_id IS NOT NULL AND NEW.hardware_id <> '' AND NEW.archived = 0
+                  AND EXISTS (SELECT 1 FROM registered_devices
+                              WHERE hardware_id = NEW.hardware_id AND archived = 0 AND id <> NEW.id)
+                BEGIN SELECT RAISE(ABORT, 'active hardware_id already registered'); END
+            """))
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_registered_devices_lifecycle_state ON registered_devices (lifecycle_state)")
             )

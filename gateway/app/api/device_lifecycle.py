@@ -1,10 +1,9 @@
-from urllib.parse import urlsplit
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from gateway.app.database import get_session
 from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.request_security import require_bounded_same_origin_json
 from gateway.app.schemas import (
     LifecycleConfirmationRequest,
     LifecycleConfirmationResponse,
@@ -17,19 +16,7 @@ router = APIRouter(prefix="/api/device-lifecycle", tags=["device lifecycle"])
 
 
 def require_protected_browser_request(request: Request) -> None:
-    if request.method != "POST":
-        raise HTTPException(status_code=405, detail={"code": "method_not_allowed", "message": "POST is required."})
-    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
-        raise HTTPException(status_code=415, detail={"code": "json_required", "message": "application/json is required."})
-    origin = request.headers.get("origin")
-    if not origin and (not request.client or request.client.host != "testclient"):
-        raise HTTPException(
-            status_code=403, detail={"code": "same_origin_required", "message": "A same-origin browser request is required."}
-        )
-    if origin and urlsplit(origin).hostname != request.url.hostname:
-        raise HTTPException(
-            status_code=403, detail={"code": "same_origin_required", "message": "Cross-origin lifecycle requests are denied."}
-        )
+    require_bounded_same_origin_json(request)
 
 
 @router.get("/removed")
@@ -52,6 +39,17 @@ def prepare_confirmation(body: LifecycleConfirmationRequest, request: Request, s
         raise HTTPException(status_code=404, detail={"code": "device_not_found", "message": "Sensor registration was not found."})
     if body.expected_hardware_id and device.hardware_id and body.expected_hardware_id != device.hardware_id:
         raise HTTPException(status_code=409, detail={"code": "hardware_identity_mismatch", "message": "Hardware identity mismatch."})
+    if body.operation == "restore":
+        if device.hardware_id and body.expected_hardware_id != device.hardware_id:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "hardware_identity_required", "message": "Exact stored hardware identity is required."},
+            )
+        if device.ble_address and body.expected_ble_address != device.ble_address:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "ble_identity_required", "message": "Exact stored BLE identity is required."},
+            )
     if body.operation == "remove" and device.archived:
         state = "removed"
     elif body.operation == "restore" and not device.archived:
@@ -60,7 +58,7 @@ def prepare_confirmation(body: LifecycleConfirmationRequest, request: Request, s
         state = device.lifecycle_state
     hardware_id = device.hardware_id or body.expected_hardware_id
     ble_address = device.ble_address
-    token = request.app.state.lifecycle_confirmations.issue(body.operation, body.device_id, hardware_id, ble_address)
+    token = request.app.state.lifecycle_confirmations.issue(body.operation, device.id, body.device_id, hardware_id, ble_address)
     return LifecycleConfirmationResponse(
         confirmation_token=token, operation=body.operation, device_id=device.device_id,
         display_name=device.display_name, hardware_id=hardware_id, ble_address=ble_address,
@@ -78,7 +76,7 @@ async def execute(body: LifecycleExecuteRequest, request: Request, session: Sess
     hardware_id = device.hardware_id or body.expected_hardware_id
     try:
         request.app.state.lifecycle_confirmations.consume(
-            body.confirmation_token, body.operation, body.device_id, hardware_id, device.ble_address
+            body.confirmation_token, body.operation, device.id, body.device_id, hardware_id, device.ble_address
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail={"code": "invalid_confirmation", "message": str(exc)}) from exc
@@ -94,7 +92,7 @@ async def execute(body: LifecycleExecuteRequest, request: Request, session: Sess
         else:
             result = service.restore(
                 body.device_id, expected_hardware_id=body.expected_hardware_id,
-                expected_ble_address=body.expected_ble_address or device.ble_address,
+                expected_ble_address=body.expected_ble_address,
             )
             restored = DeviceRepository(session).get(body.device_id)
             if restored and restored.ble_address:
@@ -102,3 +100,19 @@ async def execute(body: LifecycleExecuteRequest, request: Request, session: Sess
     except LifecycleError as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message}) from exc
     return LifecycleOperationResponse(**vars(result))
+
+
+@router.post("/cancel")
+def cancel(body: LifecycleExecuteRequest, request: Request, session: Session = Depends(get_session)) -> dict:
+    require_protected_browser_request(request)
+    device = DeviceRepository(session).get(body.device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail={"code": "device_not_found", "message": "Sensor registration not found."})
+    hardware_id = device.hardware_id or body.expected_hardware_id
+    try:
+        request.app.state.lifecycle_confirmations.consume(
+            body.confirmation_token, body.operation, device.id, body.device_id, hardware_id, device.ble_address
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={"code": "invalid_confirmation", "message": str(exc)}) from exc
+    return {"status": "cancelled"}

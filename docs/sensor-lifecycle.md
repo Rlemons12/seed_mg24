@@ -47,4 +47,4 @@ If physical reset succeeds but gateway cleanup fails, the dashboard reports part
 
 ## Security limitation
 
-Destructive browser requests require JSON, bounded schemas, same-origin validation, and explicit expiring confirmation tokens. USB execution additionally requires loopback access and exact hardware identity. The dashboard does not yet provide full user authentication or TLS; deploy it only on a trusted host/network until those controls are added. A future BLE reset would require an explicitly approved authenticated design and is intentionally absent.
+Destructive browser requests require bounded JSON, exact scheme/host/port same-origin validation, and explicit expiring confirmation tokens. USB execution additionally requires both a loopback peer and loopback Host, rejects forwarded-client headers, and requires exact hardware identity. Do not publish or reverse-proxy the USB reset routes. The dashboard does not yet provide full user authentication or TLS; deploy it only on a trusted host/network until those controls are added. A future BLE reset would require an explicitly approved authenticated design and is intentionally absent.

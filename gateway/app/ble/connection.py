@@ -77,6 +77,10 @@ class DeviceConnection:
         if self._task:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
+        while not self._commands.empty():
+            _command, future = self._commands.get_nowait()
+            if not future.done():
+                future.set_exception(ConnectionError("device management stopped; pending command cancelled"))
         await self._set_state("disconnected")
 
     async def disconnect(self) -> None:
@@ -234,6 +238,10 @@ class DeviceConnection:
                 await client.write_gatt_char(COMMAND_UUID, (command + "\n").encode("ascii"), response=True)
                 if not future.done():
                     future.set_result(None)
+            except asyncio.CancelledError:
+                if not future.done():
+                    future.set_exception(ConnectionError("device management stopped; active command cancelled"))
+                raise
             except Exception as exc:
                 if not future.done():
                     future.set_exception(exc)

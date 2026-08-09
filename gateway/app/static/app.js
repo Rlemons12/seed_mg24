@@ -174,7 +174,7 @@ $("lifecycle-form").addEventListener("submit", async (event) => {
     await refresh();
   } catch (error) { notice(error.message); $("lifecycle-execute").disabled = false; }
 });
-document.querySelector('[data-action="close-lifecycle"]').addEventListener("click",()=>{$("lifecycle-dialog").close();state.lifecycle=null;});
+document.querySelector('[data-action="close-lifecycle"]').addEventListener("click",async()=>{const pending=state.lifecycle;$("lifecycle-dialog").close();state.lifecycle=null;if(pending){try{await api("/api/device-lifecycle/cancel",{method:"POST",body:JSON.stringify({operation:pending.operation,device_id:pending.device_id,confirmation_token:pending.confirmation_token,expected_hardware_id:pending.hardware_id,expected_ble_address:pending.ble_address})});}catch(_error){/* token expires and remains single-use */}}});
 
 async function openFactoryReset(node) {
   state.resetTarget = node; state.resetConfirmation = null;

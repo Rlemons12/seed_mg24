@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from gateway.app.ble.connection import reconnect_delay
+from gateway.app.ble.connection import DeviceConnection, reconnect_delay
 from gateway.app.ble.manager import BleManager, validate_command
 
 
@@ -34,6 +34,23 @@ async def test_multiple_devices_have_independent_state(settings):
     second = manager.schedule("ARM2001-02", "BB")
     assert first is not second and first._commands is not second._commands
     await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_pending_commands_safely():
+    async def callback(*_args):
+        pass
+
+    connection = DeviceConnection(
+        "MG24-0001", "AA", telemetry_callback=callback, status_callback=callback,
+        connection_semaphore=asyncio.Semaphore(1),
+    )
+    future = asyncio.get_running_loop().create_future()
+    connection._commands.put_nowait(("PING", future))
+    await connection.stop()
+    assert connection._commands.empty()
+    with pytest.raises(ConnectionError, match="pending command cancelled"):
+        await future
 
 
 class FailingClient:

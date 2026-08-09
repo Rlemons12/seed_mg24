@@ -42,29 +42,46 @@ def ports():
     return [SimpleNamespace(device="COM9", serial_number="ABCDEF12", vid=0x2886, pid=0x0062)]
 
 
+def changing_ports():
+    port = "COM10" if FakeClient.state.get("identity_status") == "unprovisioned" else "COM9"
+    return [SimpleNamespace(device=port, serial_number="ABCDEF12", vid=0x2886, pid=0x0062)]
+
+
 @pytest.mark.asyncio
 async def test_usb_reset_prepare_requires_exact_physical_identity_and_consumes_confirmation():
     FakeClient.state = {**FakeClient.state, "node_id": "MG24-0001", "identity_status": "ok"}
-    service = UsbFactoryResetService(FakeClient, ports, reboot_timeout=1)
-    token, state = service.prepare("MG24-0001", "0x0123456789ABCDEF", "COM9")
+    service = UsbFactoryResetService(FakeClient, changing_ports, reboot_timeout=1)
+    token, state = service.prepare(1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
     assert state["port"] == "COM9" and state["hardware_id"] == "0x0123456789ABCDEF"
-    operation = service.start(token, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    operation = service.start(token, 1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
     assert operation.device_id == "MG24-0001"
     with pytest.raises(UsbResetError, match="missing, expired, reused"):
-        service.start(token, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+        service.start(token, 1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
     for _ in range(10):
         if operation.physical_reset_complete:
             break
         await asyncio.sleep(0.1)
     assert operation.physical_reset_complete and operation.state == "physical_complete"
+    assert operation.post_reset["port"] == "COM10"
+
+
+def test_usb_reset_cancellation_consumes_hardware_bound_confirmation():
+    FakeClient.state = {
+        **FakeClient.state, "node_id": "MG24-0001", "identity_status": "ok", "provisioning_state": "provisioned",
+    }
+    service = UsbFactoryResetService(FakeClient, ports)
+    token, _state = service.prepare(7, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    service.cancel(token, 7, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    with pytest.raises(UsbResetError, match="missing, expired, reused"):
+        service.start(token, 7, "MG24-0001", "0x0123456789ABCDEF", "COM9")
 
 
 def test_usb_reset_rejects_wrong_sensor_and_ambiguous_port():
     service = UsbFactoryResetService(FakeClient, ports)
     with pytest.raises(UsbResetError, match="does not match"):
-        service.prepare("MG24-9999", "0x0123456789ABCDEF", "COM9")
+        service.prepare(1, "MG24-9999", "0x0123456789ABCDEF", "COM9")
     with pytest.raises(UsbResetError, match="exactly one"):
-        service.prepare("MG24-0001", "0x0123456789ABCDEF", "COM8")
+        service.prepare(1, "MG24-0001", "0x0123456789ABCDEF", "COM8")
 
 
 def test_factory_reset_api_is_loopback_same_origin_and_hardware_bound(client, app, compatible_discovery):
@@ -85,3 +102,4 @@ def test_factory_reset_api_is_loopback_same_origin_and_hardware_bound(client, ap
     wrong = client.post("/api/factory-reset/execute", json={**body, "hardware_id": "0xFEDCBA9876543210",
                                                             "confirmation_token": response.json()["confirmation_token"]})
     assert wrong.status_code == 409
+    assert client.get("/api/factory-reset/boards", headers={"X-Forwarded-For": "203.0.113.9"}).status_code == 403

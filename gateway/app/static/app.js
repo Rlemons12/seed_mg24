@@ -119,7 +119,10 @@ function renderNodes() {
     const factoryReset = el("button", "Factory Reset Sensor", "danger");
     factoryReset.type = "button";
     factoryReset.addEventListener("click", () => openFactoryReset(node).catch((error) => notice(error.message)));
-    actions.append(reconnect, configure, remove, factoryReset);
+    const resetReregister = el("button", "Reset and Re-register", "danger");
+    resetReregister.type = "button";
+    resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
+    actions.append(reconnect, configure, remove, factoryReset, resetReregister);
     details.append(actions);
     card.append(heading, details);
     list.append(card);
@@ -295,4 +298,6 @@ document.querySelector('[data-action="disable-installation"]').addEventListener(
 let refreshTimer=null;
 function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refresh().catch(()=>{});},500); }
 function websocket() { const protocol=location.protocol==="https:"?"wss":"ws"; const socket=new WebSocket(`${protocol}://${location.host}/ws/telemetry`); socket.addEventListener("open",()=>{$("gateway-status").textContent="Live";socket.send("ready");}); socket.addEventListener("message",scheduleRefresh); socket.addEventListener("close",()=>{$("gateway-status").textContent="Reconnecting...";setTimeout(websocket,2000);}); }
+window.MG24Dashboard = { api, refresh, notice, time };
+window.MG24ResetReregister.init();
 refresh().then(websocket).catch((error)=>{notice(error.message);$("gateway-status").textContent="Unavailable";});

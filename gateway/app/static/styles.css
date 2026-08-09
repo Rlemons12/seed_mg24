@@ -65,6 +65,12 @@
 .mg-shell .summary { padding: .75rem; border-left: 4px solid var(--mg-accent); background: color-mix(in srgb, var(--mg-surface) 88%, var(--mg-accent)); white-space: pre-wrap; }
 .mg-shell .warning { font-weight: 650; }
 .mg-shell #notice { min-height: 1.75rem; padding-top: .5rem; font-weight: 650; }
+.mg-shell .workflow-stepper { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .4rem; padding: 0; list-style: none; }
+.mg-shell .workflow-stepper li { padding: .55rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-muted); font-size: .78rem; }
+.mg-shell .workflow-stepper li.current { border-color: var(--mg-accent); color: var(--mg-text); font-weight: 800; }
+.mg-shell .workflow-stepper li.complete { color: var(--mg-success); }
+.mg-shell .workflow-stepper li.failed { border-color: #b42318; color: #b42318; }
+.mg-shell .workflow-progress { min-height: 1.5rem; }
 
 @media (max-width: 650px) {
   .mg-shell .panel-header { align-items: stretch; flex-direction: column; }

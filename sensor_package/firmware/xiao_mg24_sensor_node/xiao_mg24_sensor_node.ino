@@ -14,6 +14,7 @@
 #include "silabs_additional.h"
 #if defined(ARDUINO_SILABS_STACK_BLE_SILABS)
 #include "sl_bluetooth.h"
+#include "psa/crypto.h"
 #define BLE_SUPPORTED 1
 #else
 #define BLE_SUPPORTED 0
@@ -66,11 +67,13 @@ uint16_t ble_telemetry_characteristic_handle = 0;
 uint16_t ble_command_characteristic_handle = 0;
 uint16_t ble_metadata_characteristic_handle = 0;
 uint16_t ble_capabilities_characteristic_handle = 0;
+uint16_t ble_onboarding_identity_characteristic_handle = 0;
 #endif
 char telemetry_json[512];
 char ble_json[244];
 char metadata_json[384];
 char capabilities_json[1280];
+char onboarding_identity_json[192];
 ChannelConfig microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG;
 SensorChannel microphone_channel(&microphone_runtime_config);
 TelemetryBuffer offline_buffer;
@@ -127,6 +130,9 @@ static const uuid_128 metadata_characteristic_uuid = {
 static const uuid_128 capabilities_characteristic_uuid = {
   .data = { 0xef, 0xbe, 0x24, 0x00, 0x24, 0x47, 0x4d, 0x2d, 0x80, 0x24, 0x24, 0x47, 0x4d, 0x00, 0x00, 0x05 }
 };
+static const uuid_128 onboarding_identity_characteristic_uuid = {
+  .data = { 0xef, 0xbe, 0x24, 0x00, 0x24, 0x47, 0x4d, 0x2d, 0x80, 0x24, 0x24, 0x47, 0x4d, 0x00, 0x00, 0x06 }
+};
 
 void ble_initialize_gatt_db();
 void ble_start_advertising();
@@ -134,6 +140,7 @@ void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, s
 void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
 bool ble_send_payload(const char* payload);
 void ble_initialize_when_ready();
+void ble_refresh_onboarding_identity();
 #endif
 
 bool parse_bounded_uint(const String& text, uint32_t minimum, uint32_t maximum, uint32_t* output) {
@@ -278,6 +285,7 @@ bool handle_provision_command(const String& command) {
   sample_interval_ms = verified.report_interval_ms;
   microphone_channel.reconfigure(&microphone_runtime_config);
 #if BLE_SUPPORTED
+  ble_refresh_onboarding_identity();
   snprintf(metadata_json, sizeof(metadata_json),
            "{\"node_id\":\"%s\",\"sensor_package_version\":\"%s\",\"firmware_version\":\"%s\","
            "\"protocol_version\":\"%s\",\"configuration_schema_version\":%d,\"build_identifier\":\"%s\","
@@ -679,6 +687,15 @@ void ble_initialize_gatt_db() {
                                               1, &empty_value, &ble_telemetry_characteristic_handle);
   app_assert_status(sc);
 
+  // Correlation-only bootstrap identity. It is read-only and is never included in advertising data.
+  sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
+                                              SL_BT_GATTDB_CHARACTERISTIC_READ,
+                                              0x00, 0x00, onboarding_identity_characteristic_uuid,
+                                              sl_bt_gattdb_variable_length_value, sizeof(onboarding_identity_json),
+                                              1, &empty_value,
+                                              &ble_onboarding_identity_characteristic_handle);
+  app_assert_status(sc);
+
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_WRITE,
                                               0x00, 0x00, command_characteristic_uuid,
@@ -730,7 +747,45 @@ void ble_initialize_gatt_db() {
                              (const uint8_t*)capabilities_json, strlen(capabilities_json));
   ble_write_attribute_chunks(ble_metadata_characteristic_handle,
                              (const uint8_t*)metadata_json, strlen(metadata_json));
+  ble_refresh_onboarding_identity();
   ble_database_initialized = true;
+}
+
+void ble_refresh_onboarding_identity() {
+  if (!ble_onboarding_identity_characteristic_handle) return;
+  if (!bootstrap_only) {
+    snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
+             "{\"schema_version\":1,\"provisioning_state\":\"provisioned\",\"protocol_version\":\"%s\"}",
+             PROTOCOL_VERSION);
+  } else {
+    char canonical_hardware_id[19];
+    uint64_t hardware_id = getDeviceUniqueId();
+    snprintf(canonical_hardware_id, sizeof(canonical_hardware_id), "0x%08lX%08lX",
+             (unsigned long)(hardware_id >> 32), (unsigned long)hardware_id);
+    const char domain[] = "MG24-ONBOARDING-V1";
+    char digest_input[sizeof(domain) - 1 + sizeof(canonical_hardware_id) - 1];
+    memcpy(digest_input, domain, sizeof(domain) - 1);
+    memcpy(digest_input + sizeof(domain) - 1, canonical_hardware_id, sizeof(canonical_hardware_id) - 1);
+    unsigned char digest[32];
+    size_t digest_length = 0;
+    psa_status_t hash_status = psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t*)digest_input, sizeof(digest_input),
+                                                digest, sizeof(digest), &digest_length);
+    if (hash_status != PSA_SUCCESS || digest_length != sizeof(digest)) {
+      snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
+               "{\"schema_version\":1,\"provisioning_state\":\"identity_unavailable\",\"protocol_version\":\"%s\"}",
+               PROTOCOL_VERSION);
+    } else {
+      char encoded[33];
+      for (size_t index = 0; index < 16; ++index) snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+      const char* onboarding_state = reset_recovery_status == StoreStatus::Ok ? "unprovisioned" : "recovery";
+      snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
+               "{\"schema_version\":1,\"onboarding_identity\":\"%s\",\"provisioning_state\":\"%s\","
+               "\"protocol_version\":\"%s\",\"firmware_version\":\"%s\"}",
+               encoded, onboarding_state, PROTOCOL_VERSION, FIRMWARE_VERSION);
+    }
+  }
+  ble_write_attribute_chunks(ble_onboarding_identity_characteristic_handle,
+                             (const uint8_t*)onboarding_identity_json, strlen(onboarding_identity_json));
 }
 
 void ble_initialize_when_ready() {

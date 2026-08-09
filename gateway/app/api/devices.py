@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from gateway.app.database import get_session
@@ -85,14 +85,11 @@ async def update_device(device_id: str, body: DeviceUpdate, request: Request, se
 
 
 @router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def archive_device(device_id: str, request: Request, session: Session = Depends(get_session)) -> Response:
-    repository = DeviceRepository(session)
-    device = repository.get(device_id)
-    if device is None or device.archived:
-        raise HTTPException(status_code=404, detail="device not found")
-    repository.update(device, archived=True, enabled=False, connection_status="disabled")
-    await request.app.state.ble_manager.remove(device_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+async def archive_device(device_id: str, request: Request, session: Session = Depends(get_session)) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "confirmation_required", "message": "Use the protected device-lifecycle confirmation workflow."},
+    )
 
 
 @router.post("/{device_id}/connect", status_code=status.HTTP_202_ACCEPTED)

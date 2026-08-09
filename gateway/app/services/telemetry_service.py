@@ -67,6 +67,8 @@ class TelemetryService:
             device = devices.get(registered_device_id)
             if device is None:
                 raise ValueError("registered device no longer exists")
+            if device.archived or not device.enabled or device.lifecycle_state == "removed":
+                raise ValueError("registered device is removed or disabled")
             session_id = self._session_for(registered_device_id, payload.device_uptime_ms)
             capabilities = NodeCapabilityService(devices).get(registered_device_id)
             interface_channels = {item.interface_id: set(item.telemetry_channels) for item in capabilities.interfaces}

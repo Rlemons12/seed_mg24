@@ -26,6 +26,7 @@ def list_nodes(request: Request, session: Session = Depends(get_session)) -> lis
             "display_name": node.display_name,
             "ble_address": node.ble_address,
             "ble_advertised_name": node.ble_advertised_name,
+            "hardware_id": node.hardware_id,
             "firmware_version": node.firmware_version,
             "sensor_package_version": node.sensor_package_version,
             "protocol_version": node.protocol_version,

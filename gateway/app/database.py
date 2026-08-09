@@ -55,11 +55,20 @@ def migrate_existing_database(engine: Engine) -> None:
             "configuration_schema_version": "INTEGER", "build_identifier": "VARCHAR(96)",
             "firmware_git_commit": "VARCHAR(64)", "compatibility_status": "VARCHAR(32)",
             "compatibility_message": "VARCHAR(500)",
+            "hardware_id": "VARCHAR(18)", "lifecycle_state": "VARCHAR(32) NOT NULL DEFAULT 'active'",
+            "removed_at": "DATETIME", "removal_reason": "VARCHAR(240)",
+            "factory_reset_status": "VARCHAR(32) NOT NULL DEFAULT 'not_requested'",
         }
         with engine.begin() as connection:
             for name, sql_type in additions.items():
                 if name not in columns:
                     connection.execute(text(f"ALTER TABLE registered_devices ADD COLUMN {name} {sql_type}"))
+            connection.execute(
+                text("CREATE UNIQUE INDEX IF NOT EXISTS ix_registered_devices_hardware_id ON registered_devices (hardware_id)")
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_registered_devices_lifecycle_state ON registered_devices (lifecycle_state)")
+            )
 
 
 def session_dependency(factory: sessionmaker[Session]):

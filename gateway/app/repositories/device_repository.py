@@ -29,6 +29,9 @@ class DeviceRepository:
             select(RegisteredDevice).where(RegisteredDevice.ble_address == address, RegisteredDevice.archived.is_(False))
         )
 
+    def get_by_hardware_id(self, hardware_id: str) -> RegisteredDevice | None:
+        return self.session.scalar(select(RegisteredDevice).where(RegisteredDevice.hardware_id == hardware_id))
+
     def create(self, **values) -> RegisteredDevice:
         device = RegisteredDevice(**values)
         self.session.add(device)

@@ -37,6 +37,11 @@ class RegisteredDevice(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connection_status: Mapped[str] = mapped_column(String(32), nullable=False, default="disconnected")
+    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True, unique=True, index=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removal_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    factory_reset_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_requested")
     readings: Mapped[list["Reading"]] = relationship(back_populates="device")
 
     @property
@@ -99,6 +104,25 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     subject_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     detail_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+
+
+class DeviceLifecycleEvent(Base):
+    __tablename__ = "device_lifecycle_events"
+    __table_args__ = (Index("ix_device_lifecycle_subject_created", "device_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True)
+    ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    connectivity_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    method: Mapped[str] = mapped_column(String(48), nullable=False)
+    factory_reset_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
 

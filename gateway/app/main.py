@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
@@ -9,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from gateway import __version__
-from gateway.app.api import commands, commissioning, devices, firmware, health, installations, nodes, profiles, telemetry
+from gateway.app.api import commands, commissioning, device_lifecycle, devices, firmware, health, installations, nodes, profiles, telemetry
 from gateway.app.ble.manager import BleManager
 from gateway.app.ble.scanner import BleScannerService
 from gateway.app.config import Settings, get_settings
@@ -29,6 +30,7 @@ from gateway.app.repositories.firmware_repository import FirmwareHistoryReposito
 from gateway.app.services.ble_provisioning import BleNodeProvisioner
 from gateway.app.services.compatibility_service import CompatibilityService
 from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, UsbFirmwareInstaller
+from gateway.app.services.lifecycle_confirmation import LifecycleConfirmationStore
 from gateway.app.services.provisioning_service import BlePersistentConfigurator, PiAuthoritativeConfigurator, SensorProvisioningService
 from gateway.app.services.telemetry_service import TelemetryService
 from gateway.app.services.websocket_manager import WebSocketManager
@@ -65,7 +67,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             with session_factory() as session:
                 repository = DeviceRepository(session)
                 device = repository.get(device_id)
-                if device:
+                if device and not device.archived and device.enabled and device.lifecycle_state != "removed":
                     if state == "connected":
                         connection = manager.connections.get(device_id)
                         metadata = connection.metadata if connection else {}
@@ -106,6 +108,21 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app = FastAPI(title="Seed Sensor Gateway", version=__version__, lifespan=lifespan)
 
     @app.middleware("http")
+    async def protect_lifecycle_requests(request: Request, call_next):
+        if request.url.path in {"/api/device-lifecycle/confirm", "/api/device-lifecycle/execute"}:
+            if request.method != "POST":
+                return JSONResponse(status_code=405, content={"error": "method_not_allowed", "detail": "POST is required."})
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                return JSONResponse(status_code=415, content={"error": "json_required", "detail": "application/json is required."})
+            origin = request.headers.get("origin")
+            if not origin and (not request.client or request.client.host != "testclient"):
+                return JSONResponse(status_code=403, content={"error": "same_origin_required", "detail": "Origin is required."})
+            if origin and urlsplit(origin).hostname != request.url.hostname:
+                return JSONResponse(status_code=403, content={"error": "same_origin_required", "detail": "Cross-origin request denied."})
+        return await call_next(request)
+
+    @app.middleware("http")
     async def prevent_stale_dashboard_assets(request: Request, call_next):
         response = await call_next(request)
         if request.url.path == "/" or request.url.path.startswith("/static/"):
@@ -118,6 +135,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.profile_registry = profile_registry
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
     app.state.device_configuration_results = {}
+    app.state.lifecycle_confirmations = LifecycleConfirmationStore()
     configurator = (
         BlePersistentConfigurator(session_factory, app.state.node_provisioner, lambda: app.state.ble_manager)
         if client_factory is None
@@ -134,6 +152,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.dependency_overrides[get_session] = session_dependency(session_factory)
     app.include_router(health.router)
     app.include_router(devices.router)
+    app.include_router(device_lifecycle.router)
     app.include_router(commands.router)
     app.include_router(telemetry.router)
     app.include_router(telemetry.ws_router)

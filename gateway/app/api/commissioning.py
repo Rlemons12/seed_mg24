@@ -92,6 +92,11 @@ async def commission_node(body: CommissionNodeRequest, request: Request) -> Devi
             })
         existing = repository.get(body.node_id)
         if existing is not None:
+            if existing.archived or existing.lifecycle_state == "removed":
+                raise HTTPException(status_code=409, detail={
+                    "code": "device_removed", "message": "This sensor was removed from this gateway.",
+                    "action": "restore_reapprove", "assigned_node_id": existing.device_id,
+                })
             if existing.ble_address == body.discovery_address:
                 return DeviceResponse.model_validate(existing)
             raise HTTPException(status_code=409, detail="node_id is already registered")
@@ -153,6 +158,11 @@ async def import_assigned_node(body: ImportNodeRequest, request: Request) -> Dev
         existing = repository.get(node_id)
         by_address = repository.get_by_ble_address(body.discovery_address)
         if existing is not None:
+            if existing.archived or existing.lifecycle_state == "removed":
+                raise HTTPException(status_code=409, detail={
+                    "code": "device_removed", "message": "Use Restore/Reapprove for this removed sensor.",
+                    "action": "restore_reapprove", "assigned_node_id": existing.device_id,
+                })
             if existing.ble_address != body.discovery_address:
                 raise HTTPException(status_code=409, detail={
                     "code": "identity_conflict", "message": "Node identity belongs to another address.",

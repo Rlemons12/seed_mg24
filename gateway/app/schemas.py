@@ -79,8 +79,50 @@ class DeviceResponse(BaseModel):
     last_seen_at: datetime | None
     last_connected_at: datetime | None
     connection_status: str
+    hardware_id: str | None
+    lifecycle_state: str
+    removed_at: datetime | None
+    removal_reason: str | None
+    factory_reset_status: str
     last_error: str | None = None
     rssi: int | None = None
+
+
+class LifecycleConfirmationRequest(BaseModel):
+    operation: Literal["remove", "restore"]
+    device_id: str = Field(min_length=1, max_length=96)
+    expected_hardware_id: str | None = Field(default=None, pattern=r"^0x[0-9A-F]{16}$")
+    expected_ble_address: str | None = Field(default=None, min_length=3, max_length=128)
+
+
+class LifecycleConfirmationResponse(BaseModel):
+    confirmation_token: str
+    operation: Literal["remove", "restore"]
+    device_id: str
+    display_name: str
+    hardware_id: str | None
+    ble_address: str | None
+    connection_status: str
+    expires_in_seconds: int
+
+
+class LifecycleExecuteRequest(BaseModel):
+    confirmation_token: str = Field(pattern=r"^[A-Za-z0-9_-]{32,128}$")
+    operation: Literal["remove", "restore"]
+    device_id: str = Field(min_length=1, max_length=96)
+    expected_hardware_id: str | None = Field(default=None, pattern=r"^0x[0-9A-F]{16}$")
+    expected_ble_address: str | None = Field(default=None, min_length=3, max_length=128)
+    reason: str | None = Field(default=None, max_length=240)
+
+
+class LifecycleOperationResponse(BaseModel):
+    operation_id: str
+    status: str
+    device_id: str
+    lifecycle_state: str
+    already_applied: bool
+    telemetry_preserved: bool
+    physical_sensor_changed: bool
 
 
 class ChannelValue(BaseModel):

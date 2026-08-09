@@ -22,9 +22,11 @@ class FactoryResetController {
                       ResetChallenge* output);
   ResetResult confirm(ResetScope scope, const char* expected_hardware_id, const char* operation_id,
                       const char* challenge, uint32_t now);
-  StoreStatus recover_on_boot(bool* recovered);
+  StoreStatus recover_on_boot(bool* recovery_pending);
+  StoreStatus complete_recovery_on_boot(bool unprovisioned_bootstrap_ready);
   void cancel();
   bool busy() const { return busy_ || marker_active_; }
+  bool marker_active() const { return marker_active_; }
   bool reboot_required() const { return reboot_required_; }
   const ResetChallenge& pending() const { return challenge_; }
  private:

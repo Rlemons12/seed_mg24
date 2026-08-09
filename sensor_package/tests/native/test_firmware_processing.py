@@ -19,6 +19,7 @@ def test_firmware_processing_modules(tmp_path):
         "telemetry_buffer.cpp",
         "telemetry_encoder.cpp",
         "configuration_store.cpp",
+        "persistent_record.cpp",
     ]
     command = [
         compiler,

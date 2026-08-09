@@ -84,6 +84,9 @@ StoreStatus identity_store_status = StoreStatus::Unprovisioned;
 StoreStatus configuration_store_status = StoreStatus::NotFound;
 StoreStatus reset_recovery_status = StoreStatus::Ok;
 bool bootstrap_only = true;
+bool ble_stack_ready = false;
+
+bool application_ble_stack_ready() { return ble_stack_ready; }
 
 const char* runtime_node_id() {
   return (identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious)
@@ -527,9 +530,9 @@ void setup() {
   }
   Serial.println("{\"type\":\"boot\",\"step\":\"serial\"}");
   StoreStatus nvm_status = application_nvm.initialize();
+  bool reset_recovery_pending = false;
   if (nvm_status == StoreStatus::Ok) {
-    bool recovered_reset = false;
-    reset_recovery_status = factory_reset_controller.recover_on_boot(&recovered_reset);
+    reset_recovery_status = factory_reset_controller.recover_on_boot(&reset_recovery_pending);
     identity_store_status = node_identity_store.load(&active_identity);
     StoredChannelConfiguration stored = {};
     configuration_store_status = runtime_configuration_store.load(&stored);
@@ -550,7 +553,13 @@ void setup() {
   const bool identity_valid = identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious;
   const bool configuration_valid = configuration_store_status == StoreStatus::Ok
       || configuration_store_status == StoreStatus::RecoveredFromPrevious || configuration_store_status == StoreStatus::NotFound;
-  bootstrap_only = reset_recovery_status != StoreStatus::Ok || !identity_valid || !configuration_valid;
+  bootstrap_only = reset_recovery_status != StoreStatus::Ok || reset_recovery_pending || !identity_valid || !configuration_valid;
+  if (reset_recovery_pending && reset_recovery_status == StoreStatus::Ok) {
+    const bool reset_state_verified = identity_store_status == StoreStatus::Unprovisioned
+        && configuration_store_status == StoreStatus::NotFound;
+    reset_recovery_status = factory_reset_controller.complete_recovery_on_boot(reset_state_verified);
+    bootstrap_only = true;
+  }
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(IMU_POWER_PIN, OUTPUT);
@@ -596,6 +605,7 @@ void setup() {
 void sl_bt_on_event(sl_bt_msg_t *evt) {
   switch (SL_BT_MSG_ID(evt->header)) {
     case sl_bt_evt_system_boot_id:
+      ble_stack_ready = true;
       ble_system_booted = true;
       break;
     case sl_bt_evt_connection_opened_id:
@@ -842,6 +852,7 @@ void loop() {
     else serial_overflow = true;
   }
 
+  if (factory_reset_controller.busy()) bootstrap_only = true;
   if (bootstrap_only) { delay(5); return; }
   update_microphone();
 

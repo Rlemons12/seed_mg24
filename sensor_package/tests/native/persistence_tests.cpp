@@ -41,6 +41,7 @@ int main(){
   assert(!nvm.find(ApplicationNvmKeys::kIdentitySlotA));assert(nvm.find(ApplicationNvmKeys::kResetTransactionMarker));
   assert(reset.confirm(ResetScope::ApplicationFactory,hw,op,token,50).status==StoreStatus::InvalidArgument);
   FactoryResetController rebooted(nvm);bool recovered=false;assert(rebooted.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(nvm.find(ApplicationNvmKeys::kResetTransactionMarker));assert(rebooted.complete_recovery_on_boot(true)==StoreStatus::Ok);
   assert(!nvm.find(ApplicationNvmKeys::kResetTransactionMarker));assert(!nvm.find(ApplicationNvmKeys::kIdentitySlotA));
 
   // Expired confirmations are consumed and cannot be replayed.
@@ -49,6 +50,12 @@ int main(){
   assert(expired.confirm(ResetScope::ApplicationFactory,hw,op,token,1010).status==StoreStatus::InvalidArgument);
   assert(expired.confirm(ResetScope::ApplicationFactory,hw,op,token,20).status==StoreStatus::InvalidArgument);
 
+  FakeNvm marker_write_failure;FactoryResetController marker_write_reset(marker_write_failure);
+  assert(marker_write_reset.prepare(ResetScope::ApplicationFactory,hw,hw,op,token,10,1000,&challenge)==StoreStatus::Ok);
+  marker_write_failure.fail_write_key=ApplicationNvmKeys::kResetTransactionMarker;
+  assert(marker_write_reset.confirm(ResetScope::ApplicationFactory,hw,op,token,20).status==StoreStatus::WriteFailed);
+  assert(!marker_write_failure.find(ApplicationNvmKeys::kResetTransactionMarker));
+
   // A power cut after marker creation resumes deletion before marker completion.
   FakeNvm interrupted;uint8_t sentinel=7;
   assert(interrupted.write(ApplicationNvmKeys::kIdentitySlotA,&sentinel,1)==StoreStatus::Ok);
@@ -56,6 +63,8 @@ int main(){
   write_reset_marker(interrupted,op,ResetStage::MarkerWritten);
   FactoryResetController interrupted_boot(interrupted);recovered=false;
   assert(interrupted_boot.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(interrupted_boot.complete_recovery_on_boot(false)==StoreStatus::IntegrityFailed);
+  assert(interrupted_boot.complete_recovery_on_boot(true)==StoreStatus::Ok);
   assert(!interrupted.find(ApplicationNvmKeys::kIdentitySlotA));assert(interrupted.find(0x0FF10));
 
   // A failed key deletion leaves the marker and safely completes on a later boot.
@@ -67,15 +76,37 @@ int main(){
   assert(failed_delete.find(ApplicationNvmKeys::kResetTransactionMarker));
   failed_delete.fail_remove_key=0;FactoryResetController retry_boot(failed_delete);recovered=false;
   assert(retry_boot.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(retry_boot.complete_recovery_on_boot(true)==StoreStatus::Ok);
+
+  for(size_t failed_index=0;failed_index<ApplicationNvmKeys::kApplicationFactoryResetCount;failed_index++){
+    FakeNvm each_failure;
+    for(size_t key_index=0;key_index<ApplicationNvmKeys::kApplicationFactoryResetCount;key_index++)
+      assert(each_failure.write(ApplicationNvmKeys::kApplicationFactoryReset[key_index],&sentinel,1)==StoreStatus::Ok);
+    FactoryResetController each_reset(each_failure);
+    assert(each_reset.prepare(ResetScope::ApplicationFactory,hw,hw,op,token,10,1000,&challenge)==StoreStatus::Ok);
+    each_failure.fail_remove_key=ApplicationNvmKeys::kApplicationFactoryReset[failed_index];
+    assert(each_reset.confirm(ResetScope::ApplicationFactory,hw,op,token,20).status==StoreStatus::WriteFailed);
+    assert(each_failure.find(ApplicationNvmKeys::kResetTransactionMarker));
+  }
 
   // Corrupt markers and marker-clear failures remain active storage faults.
   FakeNvm corrupt;assert(corrupt.write(ApplicationNvmKeys::kResetTransactionMarker,&sentinel,1)==StoreStatus::Ok);
   FactoryResetController corrupt_boot(corrupt);recovered=false;
-  assert(corrupt_boot.recover_on_boot(&recovered)!=StoreStatus::Ok&&corrupt_boot.marker_active()&&!recovered);
+  assert(corrupt_boot.recover_on_boot(&recovered)==StoreStatus::Ok&&corrupt_boot.marker_active()&&recovered);
+  assert(corrupt_boot.complete_recovery_on_boot(true)==StoreStatus::Ok);
   FakeNvm clear_failure;write_reset_marker(clear_failure,op,ResetStage::KeysCleared);
   clear_failure.fail_remove_key=ApplicationNvmKeys::kResetTransactionMarker;
   FactoryResetController clear_failure_boot(clear_failure);recovered=false;
-  assert(clear_failure_boot.recover_on_boot(&recovered)==StoreStatus::WriteFailed);
-  assert(clear_failure_boot.marker_active()&&clear_failure.find(ApplicationNvmKeys::kResetTransactionMarker)&&!recovered);
+  assert(clear_failure_boot.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(clear_failure_boot.complete_recovery_on_boot(true)==StoreStatus::WriteFailed);
+  assert(clear_failure_boot.marker_active()&&clear_failure.find(ApplicationNvmKeys::kResetTransactionMarker)&&recovered);
+
+  FakeNvm reprovisioned_nvm;write_reset_marker(reprovisioned_nvm,op,ResetStage::KeysCleared);
+  FactoryResetController reprovisioned_reset(reprovisioned_nvm);recovered=false;
+  assert(reprovisioned_reset.recover_on_boot(&recovered)==StoreStatus::Ok&&recovered);
+  assert(reprovisioned_reset.complete_recovery_on_boot(true)==StoreStatus::Ok);
+  NodeIdentityStore reprovisioned_ids(reprovisioned_nvm);NodeIdentity reprovisioned_identity={};
+  assert(reprovisioned_ids.provision("MG24-NEW",&reprovisioned_identity)==StoreStatus::Ok);
+  assert(!strcmp(reprovisioned_identity.node_id,"MG24-NEW"));
   return 0;
 }

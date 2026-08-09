@@ -99,24 +99,34 @@ ResetResult FactoryResetController::confirm(ResetScope scope, const char* expect
   return result;
 }
 
-StoreStatus FactoryResetController::recover_on_boot(bool* recovered) {
-  if (!recovered) return StoreStatus::InvalidArgument; *recovered = false;
+StoreStatus FactoryResetController::recover_on_boot(bool* recovery_pending) {
+  if (!recovery_pending) return StoreStatus::InvalidArgument;
+  *recovery_pending = false;
   char operation_id[33]; ResetStage stage; StoreStatus status = read_marker(operation_id, sizeof(operation_id), &stage);
   if (status == StoreStatus::NotFound) { marker_active_ = false; return StoreStatus::Ok; }
   marker_active_ = true;
-  if (status != StoreStatus::Ok) return status;
+  if (status != StoreStatus::Ok && status != StoreStatus::Corrupt && status != StoreStatus::IntegrityFailed) return status;
+  const bool marker_valid = status == StoreStatus::Ok;
   if (!reset_keys_absent()) {
     for (size_t index = 0; index < ApplicationNvmKeys::kApplicationFactoryResetCount; ++index) {
       status = backend_.remove(ApplicationNvmKeys::kApplicationFactoryReset[index]);
       if (status != StoreStatus::Ok) return status;
     }
     if (!reset_keys_absent()) return StoreStatus::IntegrityFailed;
-    status = write_marker(operation_id, ResetStage::KeysCleared);
-    if (status != StoreStatus::Ok) return status;
+    if (marker_valid) {
+      status = write_marker(operation_id, ResetStage::KeysCleared);
+      if (status != StoreStatus::Ok) return status;
+    }
   }
-  status = clear_marker();
-  if (status != StoreStatus::Ok) return status;
-  marker_active_ = false; *recovered = true; return StoreStatus::Ok;
+  *recovery_pending = true;
+  return StoreStatus::Ok;
+}
+
+StoreStatus FactoryResetController::complete_recovery_on_boot(bool unprovisioned_bootstrap_ready) {
+  if (!marker_active_ || !unprovisioned_bootstrap_ready || !reset_keys_absent()) return StoreStatus::IntegrityFailed;
+  StoreStatus status = clear_marker();
+  if (status == StoreStatus::Ok) marker_active_ = false;
+  return status;
 }
 
 void FactoryResetController::cancel() { challenge_.pending = false; }

@@ -13,6 +13,7 @@ window.MG24ResetReregister = (() => {
     ["network_verification_in_progress", "Verify network"], ["complete", "Complete"],
   ];
   let dialog; let operation; let selectedNode; let pending = false; let pollTimer; let detectedBoards = [];
+  let bleCandidates = []; let expectedIdentityHint = "";
   const id = (name) => document.getElementById(name);
   const api = (...args) => window.MG24Dashboard.api(...args);
   const post = (path, body = {}) => api(path, {method: "POST", body: JSON.stringify(body)});
@@ -104,10 +105,13 @@ window.MG24ResetReregister = (() => {
         {choice:choice.value,device_id:sensorId.value,display_name:name.value,location:location.value||null,configuration:config()}); });
     } else if (operation.state === "searching_for_reset_sensor_ble") {
       const box=document.createElement("div");box.id="rr-ble-list";controls.append(Object.assign(document.createElement("p"),{textContent:"Scan for the reset sensor in unprovisioned onboarding mode. Multiple candidates require explicit selection."}),box);
+      renderBleCandidates(box);
       setPrimary("Scan for reset sensor", scanBle);
     } else if (operation.state === "ble_identity_matched") {
-      controls.append(Object.assign(document.createElement("p"),{textContent:"Provisioning writes configuration first and identity last, then verifies read-back before gateway registration."}));
-      setPrimary("Provision and add to network", async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
+      const box=document.createElement("div");controls.append(Object.assign(document.createElement("p"),{textContent:`Expected onboarding identity: ${expectedIdentityHint || "verified by gateway"}. RSSI and BLE address are informational only.`}),box);
+      renderBleCandidates(box);
+      controls.append(Object.assign(document.createElement("p"),{textContent:"Provisioning writes configuration first and identity last, then verifies read-back and hides the bootstrap identity before gateway registration."}));
+      setPrimary("Provision This Sensor", async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
     } else if (operation.state === "network_verification_in_progress") {
       controls.append(Object.assign(document.createElement("p"),{textContent:"Registered—waiting for first telemetry. You may retry the connection check or finish later."}));
       setPrimary("Retry connection verification", async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/verify-network`);});
@@ -139,9 +143,12 @@ window.MG24ResetReregister = (() => {
   async function prepareReset(){operation=await post(`/api/reset-reregister/${operation.operation_id}/prepare-reset`,{port:operation.selected_port,expected_hardware_id:operation.hardware_id,typed_hardware_id:operation.hardware_id});}
   async function executeReset(){operation=await post(`/api/reset-reregister/${operation.operation_id}/execute-reset`,{port:operation.selected_port,expected_hardware_id:operation.hardware_id,typed_hardware_id:operation.hardware_id});schedulePoll();}
   async function cancelReset(){operation=await post(`/api/reset-reregister/${operation.operation_id}/cancel-reset`,{port:operation.selected_port,expected_hardware_id:operation.hardware_id,typed_hardware_id:operation.hardware_id});}
-  async function scanBle(){const found=await post(`/api/reset-reregister/${operation.operation_id}/scan-ble`);const box=id("rr-ble-list");box.replaceChildren();
-    found.candidates.forEach((candidate)=>{const button=document.createElement("button");button.type="button";button.textContent=`${candidate.name||"Unnamed"} — ${candidate.address} — ${candidate.rssi??"?"} dBm`;button.onclick=()=>run(async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/select-ble`,{address:candidate.address});});box.append(button);});
-    if(!found.candidates.length) throw new Error("No unprovisioned MG24 sensor was found. Retry scan without repeating reset."); }
+  function renderBleCandidates(box){box.replaceChildren();bleCandidates.forEach((candidate)=>{const card=document.createElement("div");card.className="summary";
+    const status=document.createElement("strong");status.textContent=candidate.label;const detail=document.createElement("p");
+    detail.textContent=`${candidate.address} — RSSI ${candidate.rssi??"unknown"} dBm (informational) — firmware ${candidate.firmware_version||"unknown"} — protocol ${candidate.protocol_version||"unknown"}. ${candidate.reason}`;
+    card.append(status,detail);box.append(card);});if(!bleCandidates.length)box.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"This sensor cannot be safely matched to the device verified over USB. Provisioning is blocked."}));}
+  async function scanBle(){const found=await post(`/api/reset-reregister/${operation.operation_id}/scan-ble`);bleCandidates=found.candidates;expectedIdentityHint=found.expected_onboarding_identity_hint;operation=found;
+    if(!found.candidates.some((candidate)=>candidate.verification_status==="verified_match"))throw new Error("This sensor cannot be safely matched to the device verified over USB. Provisioning is blocked."); }
   async function refreshOperation(){operation=await api(`/api/reset-reregister/${operation.operation_id}`);render();}
   function schedulePoll(){clearTimeout(pollTimer);pollTimer=setTimeout(async()=>{await refreshOperation();if(["reset_in_progress","waiting_for_usb_reenumeration","post_reset_verification"].includes(operation.state))schedulePoll();},750);}
   async function open(node){selectedNode=node;operation=await post("/api/reset-reregister/start",{device_id:node.node_id});dialog.showModal();render();}

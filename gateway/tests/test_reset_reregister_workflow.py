@@ -2,11 +2,13 @@ import json
 from pathlib import Path
 from types import MethodType
 
+import pytest
 from sqlalchemy import func, select
 
 from gateway.app.ble.onboarding_identity import derive_onboarding_identity
 from gateway.app.models import Reading, SensorReregistrationWorkflow
 from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.services.ble_provisioning import BleProvisioningError
 
 
 def register_with_identity(client, app, discovery, hardware_id="0x0123456789ABCDEF"):
@@ -179,3 +181,19 @@ def test_duplicate_claimed_identity_blocks_and_manual_selection_cannot_bypass(cl
     selected = client.post(f"/api/reset-reregister/{operation['operation_id']}/select-ble",
                            json={"address": compatible_discovery.address})
     assert selected.status_code == 409 and selected.json()["detail"]["code"] == "ble_identity_mismatch"
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("timed out"), BleProvisioningError("disconnected")])
+def test_ble_identity_read_failure_blocks_provisioning(client, app, compatible_discovery, failure):
+    operation = prepare_ble_workflow(client, app, compatible_discovery)
+
+    class FailedProvisioner:
+        async def read_onboarding_identity(self, _address):
+            raise failure
+
+    app.state.node_provisioner = FailedProvisioner()
+    scanned = client.post(f"/api/reset-reregister/{operation['operation_id']}/scan-ble", json={})
+    assert scanned.status_code == 200 and scanned.json()["state"] == "searching_for_reset_sensor_ble"
+    candidate = scanned.json()["candidates"][0]
+    assert candidate["verification_status"] == "read_failure" and not candidate["provisioning_allowed"]
+    assert scanned.json()["target_ble_address"] is None

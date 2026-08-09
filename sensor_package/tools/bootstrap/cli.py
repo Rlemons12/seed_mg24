@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -95,7 +96,13 @@ def main(argv: list[str] | None = None) -> int:
                     backup["state"]["node_id"] = None
                 backup["canonical_content_hash"] = content_hash(backup)
                 args.file.parent.mkdir(parents=True, exist_ok=True)
-                args.file.write_text(json.dumps(backup, indent=2) + "\n", encoding="utf-8")
+                descriptor = os.open(args.file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                    output.write(json.dumps(backup, indent=2) + "\n")
+                try:
+                    args.file.chmod(0o600)
+                except OSError:
+                    pass
                 validate_backup(json.loads(args.file.read_text(encoding="utf-8")))
                 response = {"status": "success", "file": str(args.file), "sha256": backup["canonical_content_hash"]}
             elif args.command == "restore":
@@ -126,9 +133,12 @@ def main(argv: list[str] | None = None) -> int:
                     "prepare_factory_reset", reset_protocol_version=2, scope=args.scope,
                     expected_hardware_id=args.hardware_id,
                 )
-                print(json.dumps(prepared, indent=2))
                 if not args.confirm:
                     client.request("cancel_factory_reset")
+                    print(json.dumps({
+                        "status": "prepared_then_cancelled", "hardware_id": args.hardware_id,
+                        "scope": args.scope, "expires_in_ms": prepared["result"].get("expires_in_ms"),
+                    }, indent=2))
                     return 0
                 challenge = prepared["result"]
                 if challenge.get("hardware_id") != args.hardware_id:

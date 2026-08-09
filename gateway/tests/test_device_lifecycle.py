@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from gateway.app.models import DeviceLifecycleEvent, Reading, SensorInstallation
 from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.services.device_lifecycle_service import DeviceLifecycleService
 
 
 def register(client, discovery):
@@ -69,6 +70,33 @@ def test_removal_is_idempotent_and_confirmation_is_single_use(client, compatible
     assert execute(client, "remove", token).status_code == 409
     second = execute(client, "remove", confirmation(client, "remove"))
     assert second.status_code == 200 and second.json()["already_applied"] is True
+
+
+def test_remove_offline_sensor(client, app, compatible_discovery):
+    register(client, compatible_discovery)
+    response = execute(client, "remove", confirmation(client, "remove"))
+    assert response.status_code == 200
+    with app.state.session_factory() as session:
+        device = DeviceRepository(session).get("MG24-0001")
+        assert device.archived and device.connection_status == "disabled"
+
+
+def test_removal_rolls_back_when_database_commit_fails(client, app, compatible_discovery, monkeypatch):
+    register(client, compatible_discovery)
+    with app.state.session_factory() as session:
+        original_commit = session.commit
+
+        def fail_commit():
+            raise RuntimeError("simulated database failure")
+
+        monkeypatch.setattr(session, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="simulated database failure"):
+            DeviceLifecycleService(session).remove("MG24-0001", reason="test", connectivity_state="offline")
+        monkeypatch.setattr(session, "commit", original_commit)
+        session.expire_all()
+        device = DeviceRepository(session).get("MG24-0001")
+        assert not device.archived and device.enabled and device.lifecycle_state == "active"
+        assert session.scalar(select(func.count()).select_from(DeviceLifecycleEvent)) == 0
 
 
 def test_restore_requires_explicit_confirmed_operation_and_reuses_record(client, app, compatible_discovery):

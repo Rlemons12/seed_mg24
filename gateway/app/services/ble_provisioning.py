@@ -4,7 +4,14 @@ import re
 from collections.abc import Callable
 from uuid import uuid4
 
-from gateway.app.ble.constants import CAPABILITIES_UUID, COMMAND_UUID, METADATA_UUID, TELEMETRY_UUID
+from gateway.app.ble.constants import (
+    CAPABILITIES_UUID,
+    COMMAND_UUID,
+    METADATA_UUID,
+    ONBOARDING_IDENTITY_UUID,
+    TELEMETRY_UUID,
+)
+from gateway.app.ble.onboarding_identity import OnboardingIdentityError, parse_onboarding_payload
 
 
 class BleProvisioningError(ValueError):
@@ -33,6 +40,17 @@ class BleNodeProvisioner:
             metadata = json.loads(bytes(await client.read_gatt_char(METADATA_UUID)).decode("utf-8"))
             capabilities = json.loads(bytes(await client.read_gatt_char(CAPABILITIES_UUID)).decode("utf-8"))
         return metadata, capabilities
+
+    async def read_onboarding_identity(self, address: str) -> dict:
+        """Read the correlation-only bootstrap identity without changing sensor state."""
+        try:
+            async with self._client(address) as client:
+                raw = bytes(await client.read_gatt_char(ONBOARDING_IDENTITY_UUID))
+            return parse_onboarding_payload(raw)
+        except OnboardingIdentityError:
+            raise
+        except Exception as exc:
+            raise BleProvisioningError(f"onboarding identity read failed: {exc}") from exc
 
     async def read_state(self, address: str) -> dict:
         """Read authoritative identity/configuration without changing persistent state."""
@@ -66,7 +84,8 @@ class BleNodeProvisioner:
             raise BleProvisioningError("device returned an invalid provisioning state")
         return {"metadata": metadata, "capabilities": capabilities, "readback": readback}
 
-    async def provision(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
+    async def provision(self, address: str, node_id: str, transaction_id: str, configuration: dict,
+                        expected_onboarding_identity: str | None = None) -> dict:
         if not re.fullmatch(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", node_id) or len(node_id) > 31:
             raise BleProvisioningError("node_id is invalid")
         if not re.fullmatch(r"[0-9a-f]{16,24}", transaction_id):
@@ -77,7 +96,8 @@ class BleNodeProvisioner:
             raise BleProvisioningError("a provisioning operation is already active for this node")
         async with lock:
             return await asyncio.wait_for(
-                self._provision(address, node_id, transaction_id, configuration), timeout=self.timeout_seconds
+                self._provision(address, node_id, transaction_id, configuration, expected_onboarding_identity),
+                timeout=self.timeout_seconds,
             )
 
     async def configure(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
@@ -141,7 +161,8 @@ class BleNodeProvisioner:
         expected = dict(zip(("sample", "process", "report", "heartbeat", "filter", "window", "enabled"), values, strict=True))
         return all(readback.get(key) == value for key, value in expected.items())
 
-    async def _provision(self, address: str, node_id: str, transaction_id: str, configuration: dict) -> dict:
+    async def _provision(self, address: str, node_id: str, transaction_id: str, configuration: dict,
+                         expected_onboarding_identity: str | None) -> dict:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=16)
 
         def notification(_sender, data: bytearray) -> None:
@@ -157,6 +178,14 @@ class BleNodeProvisioner:
         if len(command.encode("ascii")) > 191:
             raise BleProvisioningError("provisioning command exceeds firmware limit")
         async with self._client(address) as client:
+            if expected_onboarding_identity is not None:
+                try:
+                    onboarding_before = parse_onboarding_payload(
+                        bytes(await client.read_gatt_char(ONBOARDING_IDENTITY_UUID)))
+                except OnboardingIdentityError as exc:
+                    raise BleProvisioningError(str(exc)) from exc
+                if onboarding_before.get("onboarding_identity") != expected_onboarding_identity:
+                    raise BleProvisioningError("BLE candidate no longer matches the USB-verified physical sensor")
             metadata = json.loads(bytes(await client.read_gatt_char(METADATA_UUID)).decode("utf-8"))
             capabilities = json.loads(bytes(await client.read_gatt_char(CAPABILITIES_UUID)).decode("utf-8"))
             if metadata.get("protocol_version") != "1.0.0":
@@ -173,6 +202,13 @@ class BleNodeProvisioner:
                 raise BleProvisioningError("node is already assigned to a different identity")
             await client.write_gatt_char(COMMAND_UUID, f"PROVGET 1 {transaction_id}".encode("ascii"), response=True)
             readback = await self._wait_for(queue, transaction_id, {"readback"})
+            onboarding_after = None
+            if expected_onboarding_identity is not None:
+                try:
+                    onboarding_after = parse_onboarding_payload(
+                        bytes(await client.read_gatt_char(ONBOARDING_IDENTITY_UUID)))
+                except OnboardingIdentityError as exc:
+                    raise BleProvisioningError(str(exc)) from exc
             await client.stop_notify(TELEMETRY_UUID)
         expected = {
             "sample": values[0], "process": values[1], "report": values[2], "heartbeat": values[3],
@@ -180,7 +216,13 @@ class BleNodeProvisioner:
         }
         if readback.get("id") != node_id or any(readback.get(key) != value for key, value in expected.items()):
             raise BleProvisioningError("device readback does not match requested identity and configuration")
-        return {"acknowledgement": acknowledgement, "readback": readback, "metadata": metadata, "capabilities": capabilities}
+        if expected_onboarding_identity is not None and (
+            onboarding_after.get("provisioning_state") != "provisioned"
+            or "onboarding_identity" in onboarding_after
+        ):
+            raise BleProvisioningError("bootstrap identity remained exposed after provisioning")
+        return {"acknowledgement": acknowledgement, "readback": readback, "metadata": metadata,
+                "capabilities": capabilities, "onboarding_after": onboarding_after}
 
     async def _wait_for(self, queue: asyncio.Queue[dict], transaction_id: str, accepted_codes: set[str]) -> dict:
         while True:

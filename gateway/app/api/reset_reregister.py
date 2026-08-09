@@ -7,6 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from gateway.app.ble.onboarding_identity import (
+    OnboardingIdentityError,
+    derive_onboarding_identity,
+)
 from gateway.app.database import get_session
 from gateway.app.models import (
     DeviceLifecycleEvent,
@@ -364,31 +368,63 @@ async def scan_ble(operation_id: str, request: Request, session: Session = Depen
         item = service.get(operation_id)
         await request.app.state.scanner.start_scan()
         await request.app.state.scanner.wait_for_scan()
-        candidates = []
-        for discovery in request.app.state.scanner.discoveries():
+        expected = derive_onboarding_identity(item.hardware_id)
+        semaphore = asyncio.Semaphore(3)
+
+        async def classify(discovery) -> dict:
+            result = {"address": discovery.address, "name": discovery.name, "rssi": discovery.rssi,
+                      "verification_status": "identity_unavailable", "label": "Unable to verify identity",
+                      "reason": "Onboarding identity was not read.", "provisioning_allowed": False}
             if not discovery.compatible:
-                continue
+                result.update(verification_status="incompatible_protocol", label="Incompatible firmware",
+                              reason=discovery.compatibility_reason)
+                return result
             try:
-                state = await request.app.state.node_provisioner.read_state(discovery.address)
-            except (BleProvisioningError, TimeoutError, ConnectionError):
-                continue
-            if state["readback"].get("id") == "UNASSIGNED-MG24":
-                candidates.append({"address": discovery.address, "name": discovery.name, "rssi": discovery.rssi,
-                                   "commissioning_state": "unassigned",
-                                   "hardware_identity_available": False})
-        return {
-            **service.public(item), "candidates": candidates,
-            "identity_limitation": (
-                "BLE onboarding does not expose immutable MCU hardware ID; select explicitly and correlate physical "
-                "presence. Multiple candidates are never auto-selected."
-            ),
-        }
+                async with semaphore:
+                    identity = await asyncio.wait_for(
+                        request.app.state.node_provisioner.read_onboarding_identity(discovery.address),
+                        timeout=request.app.state.settings.provisioning_timeout_seconds,
+                    )
+                result.update(firmware_version=identity.get("firmware_version"),
+                              protocol_version=identity.get("protocol_version"),
+                              provisioning_state=identity.get("provisioning_state"))
+                if identity.get("protocol_version") not in request.app.state.compatibility.matrix["supported_protocol_versions"]:
+                    result.update(verification_status="incompatible_protocol", label="Incompatible firmware",
+                                  reason="The onboarding identity protocol is not supported.")
+                elif identity.get("onboarding_identity") == expected:
+                    result.update(verification_status="verified_match", label="Verified physical sensor",
+                                  reason="BLE identity exactly matches the USB-verified sensor.",
+                                  provisioning_allowed=True)
+                else:
+                    result.update(verification_status="non_match", label="Different sensor",
+                                  reason="BLE identity does not match the USB-verified sensor.")
+            except TimeoutError:
+                result.update(verification_status="read_failure", reason="BLE identity read timed out.")
+            except OnboardingIdentityError as exc:
+                result.update(verification_status="identity_unavailable", reason=str(exc))
+            except (BleProvisioningError, ConnectionError) as exc:
+                result.update(verification_status="read_failure", reason=str(exc))
+            return result
+
+        candidates = await asyncio.gather(*(classify(row) for row in request.app.state.scanner.discoveries()))
+        matches = [row for row in candidates if row["verification_status"] == "verified_match"]
+        if len(matches) > 1:
+            for row in matches:
+                row.update(verification_status="duplicate_identity", label="Unable to verify identity",
+                           reason="Multiple BLE candidates claimed the expected identity.", provisioning_allowed=False)
+            service.transition(item, "searching_for_reset_sensor_ble", progress="Duplicate BLE identity claims blocked")
+        elif len(matches) == 1:
+            item.target_ble_address = matches[0]["address"]
+            service.transition(item, "ble_identity_matched", progress="BLE identity matched the USB-verified sensor")
+        return {**service.public(item), "candidates": candidates,
+                "expected_onboarding_identity_hint": f"{expected[:8]}…{expected[-4:]}"}
     except WorkflowError as exc:
         fail(exc, 404)
 
 
 @router.post("/{operation_id}/select-ble")
-def select_ble(operation_id: str, body: BleSelection, request: Request, session: Session = Depends(get_session)) -> dict:
+async def select_ble(operation_id: str, body: BleSelection, request: Request,
+                     session: Session = Depends(get_session)) -> dict:
     protect(request)
     service = ResetReregisterWorkflowService(session)
     try:
@@ -396,8 +432,23 @@ def select_ble(operation_id: str, body: BleSelection, request: Request, session:
         discovery = request.app.state.scanner.get(body.address)
         if discovery is None or not discovery.compatible:
             raise WorkflowError("ble_candidate_expired", "Selected BLE candidate expired; scan again.")
+        expected = derive_onboarding_identity(item.hardware_id)
+        try:
+            identity = await asyncio.wait_for(
+                request.app.state.node_provisioner.read_onboarding_identity(body.address),
+                timeout=request.app.state.settings.provisioning_timeout_seconds,
+            )
+        except (OnboardingIdentityError, BleProvisioningError, TimeoutError, ConnectionError) as exc:
+            raise WorkflowError(
+                "ble_identity_unavailable",
+                "This sensor cannot be safely matched to the device verified over USB. Provisioning is blocked.",
+            ) from exc
+        if identity.get("protocol_version") not in request.app.state.compatibility.matrix["supported_protocol_versions"]:
+            raise WorkflowError("ble_protocol_incompatible", "The sensor onboarding identity protocol is incompatible.")
+        if identity.get("onboarding_identity") != expected:
+            raise WorkflowError("ble_identity_mismatch", "Manual selection cannot bypass physical identity mismatch.")
         item.target_ble_address = body.address
-        service.transition(item, "ble_identity_matched", progress="Operator selected the unprovisioned BLE candidate")
+        service.transition(item, "ble_identity_matched", progress="BLE identity matched the USB-verified sensor")
         return service.public(item)
     except WorkflowError as exc:
         fail(exc)
@@ -413,7 +464,8 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
             raise WorkflowError("ble_target_required", "Select a verified unprovisioned BLE candidate first.")
         service.transition(item, "provisioning_in_progress", progress="BLE provisioning started")
         result = await request.app.state.node_provisioner.provision(
-            item.target_ble_address, item.target_device_id, item.operation_id[:16], json.loads(item.configuration_json))
+            item.target_ble_address, item.target_device_id, item.operation_id[:16], json.loads(item.configuration_json),
+            expected_onboarding_identity=derive_onboarding_identity(item.hardware_id))
         if result["readback"].get("id") != item.target_device_id:
             raise WorkflowError("provisioning_readback_failed", "Provisioned identity did not pass read-back.")
         result_data = json.loads(item.result_json)

@@ -152,6 +152,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.session_factory = session_factory
     app.state.websocket_manager = websocket_manager
     app.state.profile_registry = profile_registry
+    app.state.compatibility = compatibility
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
     app.state.device_configuration_results = {}
     app.state.lifecycle_confirmations = LifecycleConfirmationStore()

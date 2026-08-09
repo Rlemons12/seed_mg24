@@ -80,13 +80,21 @@ async def execute(body: ResetExecution, request: Request, session: Session = Dep
     device = DeviceRepository(session).get(body.device_id)
     if device is None or device.archived:
         raise HTTPException(status_code=409, detail={"code": "target_changed", "message": "Reset target changed after confirmation."})
+    pending_recorded = False
     try:
-        item = request.app.state.usb_factory_reset.start(
+        request.app.state.usb_factory_reset.authorize(
             body.confirmation_token, device.id, body.device_id, body.hardware_id, body.port
         )
+        device.factory_reset_status = "reset_pending"
+        session.commit()
+        pending_recorded = True
+        item = request.app.state.usb_factory_reset.launch(device.id, body.device_id, body.hardware_id, body.port)
         asyncio.create_task(finalize_when_ready(request, item.operation_id))
         return vars(item)
     except UsbResetError as exc:
+        if pending_recorded:
+            device.factory_reset_status = "reset_failed"
+            session.commit()
         raise HTTPException(status_code=409, detail={"code": "invalid_confirmation", "message": str(exc)}) from exc
 
 
@@ -135,6 +143,12 @@ async def finalize_when_ready(request: Request, operation_id: str) -> None:
         await asyncio.sleep(0.1)
     if item.physical_reset_complete:
         await cleanup_gateway(request, item)
+    else:
+        with request.app.state.session_factory() as session:
+            device = DeviceRepository(session).get(item.device_id)
+            if device is not None and device.id == item.record_id:
+                device.factory_reset_status = "reset_failed"
+                session.commit()
 
 
 @router.get("/operations/{operation_id}")

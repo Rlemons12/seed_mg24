@@ -76,12 +76,14 @@ class UsbFactoryResetService:
         if pending is None or pending[:5] != (record_id, device_id, hardware_id, "application_factory", port):
             raise UsbResetError("factory-reset confirmation is missing, expired, reused, or mismatched")
 
-    def start(self, token: str, record_id: int, device_id: str, hardware_id: str, port: str) -> UsbResetOperation:
+    def authorize(self, token: str, record_id: int, device_id: str, hardware_id: str, port: str) -> None:
         with self._confirmation_lock:
             pending = self._confirmations.pop(token, None)
         expected = (record_id, device_id, hardware_id, "application_factory", port)
         if pending is None or pending[:5] != expected or pending[5] <= monotonic():
             raise UsbResetError("factory-reset confirmation is missing, expired, reused, or mismatched")
+
+    def launch(self, record_id: int, device_id: str, hardware_id: str, port: str) -> UsbResetOperation:
         lock = self._locks.setdefault(hardware_id, asyncio.Lock())
         if lock.locked():
             raise UsbResetError("a reset operation is already active for this physical sensor")
@@ -89,6 +91,10 @@ class UsbFactoryResetService:
         self.operations[operation.operation_id] = operation
         asyncio.create_task(self._run(operation, lock))
         return operation
+
+    def start(self, token: str, record_id: int, device_id: str, hardware_id: str, port: str) -> UsbResetOperation:
+        self.authorize(token, record_id, device_id, hardware_id, port)
+        return self.launch(record_id, device_id, hardware_id, port)
 
     async def _run(self, operation: UsbResetOperation, lock: asyncio.Lock) -> None:
         async with lock:

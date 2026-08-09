@@ -43,7 +43,7 @@ Before reboot, firmware writes and verifies the integrity-protected `0x0FF06` ma
 5. Wait for reboot/re-enumeration. Success is reported only after read-back shows an unprovisioned sensor with the same hardware ID and firmware version and gateway cleanup succeeds.
 6. Use Add Sensor to onboard it as a new unprovisioned package. The old mutable sensor ID is not reused automatically.
 
-If physical reset succeeds but gateway cleanup fails, the dashboard reports partial failure and polling/retry safely repeats only the idempotent cleanup. If power is lost, reconnect USB and allow boot recovery to finish before onboarding. Do not upload firmware or operate a physical sensor without the operator's explicit authorization.
+If physical reset succeeds but gateway cleanup fails, the dashboard reports partial failure and polling/retry safely repeats only the idempotent cleanup. The gateway records `reset_pending` before execution and retains it across a gateway restart; use the ordinary confirmed removal workflow to reconcile a stranded pending registration if the in-memory USB operation was lost. If power is lost, reconnect USB and allow boot recovery to finish before onboarding. Do not upload firmware or operate a physical sensor without the operator's explicit authorization.
 
 ## Security limitation
 

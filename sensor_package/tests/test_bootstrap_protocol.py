@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from sensor_package.tools.bootstrap.protocol import ProtocolError, content_hash, decode_response, encode_request, validate_backup
+from sensor_package.tools.bootstrap.protocol import (
+    HARDWARE_ID_PATTERN,
+    ProtocolError,
+    content_hash,
+    decode_response,
+    encode_request,
+    validate_backup,
+)
 
 
 def test_request_is_bounded_and_correlated():
@@ -56,3 +63,9 @@ def test_bootstrap_schema_action_and_version_constraints_match_fixtures():
     assert json.loads((fixtures / "bootstrap_read_request.json").read_text())["action"] in allowed
     assert json.loads((fixtures / "bootstrap_unknown_action.json").read_text())["action"] not in allowed
     assert json.loads((fixtures / "bootstrap_unsupported_version.json").read_text())["schema_version"] != 1
+    prepare = json.loads((fixtures / "bootstrap_reset_prepare.json").read_text())
+    confirm = json.loads((fixtures / "bootstrap_reset_confirm.json").read_text())
+    assert prepare["reset_protocol_version"] == confirm["reset_protocol_version"] == 2
+    assert HARDWARE_ID_PATTERN.fullmatch(prepare["expected_hardware_id"])
+    assert confirm["expected_hardware_id"] == prepare["expected_hardware_id"]
+    assert len(confirm["operation_id"]) == len(confirm["challenge"]) == 32

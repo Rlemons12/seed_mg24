@@ -1,1 +1,1 @@
-{"type":"bootstrap_request","schema_version":1,"request_id":"reset-prepare-001","action":"prepare_factory_reset","scope":"configuration_only"}
+{"type":"bootstrap_request","schema_version":1,"request_id":"reset-prepare-001","action":"prepare_factory_reset","reset_protocol_version":2,"scope":"application_factory","expected_hardware_id":"0x0123456789ABCDEF"}

@@ -1,3 +1,3 @@
-param([Parameter(Mandatory=$true)][string]$Port,[ValidateSet('configuration_only','application_factory')][string]$Scope='configuration_only',[switch]$Confirm)
-$ErrorActionPreference='Stop';$Root=Split-Path -Parent (Split-Path -Parent $PSScriptRoot);$Args=@('-m','sensor_package.tools.bootstrap.cli','factory-reset','--port',$Port,'--scope',$Scope);if($Confirm){$typed=Read-Host "Type the exact scope '$Scope' to confirm";if($typed -ne $Scope){throw 'Confirmation did not match'};$Args+='--confirm'}
+param([Parameter(Mandatory=$true)][string]$Port,[Parameter(Mandatory=$true)][ValidatePattern('^0x[0-9A-F]{16}$')][string]$HardwareId,[switch]$Confirm)
+$ErrorActionPreference='Stop';$Root=Split-Path -Parent (Split-Path -Parent $PSScriptRoot);$Args=@('-m','sensor_package.tools.bootstrap.cli','factory-reset','--port',$Port,'--scope','application_factory','--hardware-id',$HardwareId);if($Confirm){$typed=Read-Host "Type the exact hardware ID '$HardwareId' to confirm";if($typed -ne $HardwareId){throw 'Hardware identity confirmation did not match'};$Args+='--confirm'}
 Push-Location $Root;try{& python @Args;exit $LASTEXITCODE}finally{Pop-Location}

@@ -10,6 +10,7 @@ SCHEMA_VERSION = 1
 MAX_LINE_BYTES = 768
 MAX_REQUEST_ID = 40
 NODE_ID_PATTERN = re.compile(r"^[A-Z0-9]+(?:-[A-Z0-9]+)*$")
+HARDWARE_ID_PATTERN = re.compile(r"^0x[0-9A-F]{16}$")
 ALLOWED_ACTIONS = {
     "read_node_state",
     "read_identity",

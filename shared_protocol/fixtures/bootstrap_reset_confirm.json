@@ -1,1 +1,1 @@
-{"type":"bootstrap_request","schema_version":1,"request_id":"reset-confirm-001","action":"confirm_factory_reset","scope":"configuration_only","confirmation_token":123456}
+{"type":"bootstrap_request","schema_version":1,"request_id":"reset-confirm-001","action":"confirm_factory_reset","reset_protocol_version":2,"scope":"application_factory","expected_hardware_id":"0x0123456789ABCDEF","operation_id":"00112233445566778899AABBCCDDEEFF","challenge":"FFEEDDCCBBAA99887766554433221100"}

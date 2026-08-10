@@ -881,6 +881,13 @@ void loop() {
   static bool serial_overflow = false;
   while (Serial.available()) {
     char c = (char)Serial.read();
+    // A disconnected host can leave a partial request buffered. A new framed
+    // bootstrap request always starts with 'M', so resynchronize instead of
+    // concatenating two transactions and misreading their schema fields.
+    if (c == 'M' && serial_length > 0) {
+      serial_length = 0;
+      serial_overflow = false;
+    }
     if (c == '\r') continue;
     if (c == '\n') {
       if (!serial_overflow && serial_length) {
@@ -889,7 +896,9 @@ void loop() {
         if (factory_reset_controller.reboot_required()) {
           memset(&active_identity, 0, sizeof(active_identity)); identity_store_status = StoreStatus::Unprovisioned;
           microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; microphone_channel.reconfigure(&microphone_runtime_config);
-          offline_buffer.clear(); bootstrap_only = true; Serial.flush(); delay(50); systemReset();
+          // USB CDC needs a bounded drain interval so the host receives the
+          // successful destructive-confirmation acknowledgement before reboot.
+          offline_buffer.clear(); bootstrap_only = true; Serial.flush(); delay(250); systemReset();
         }
       } else if (serial_overflow) {
         Serial.println("MG24BOOT1 {\"type\":\"bootstrap_response\",\"schema_version\":1,\"request_id\":\"unknown\",\"action\":\"unknown\",\"status\":\"error\",\"error_code\":\"line_too_large\"}");

@@ -1,4 +1,6 @@
 import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -110,6 +112,28 @@ def test_usb_inspection_normalizes_persistent_protocol_timeout():
 
     with pytest.raises(UsbResetError, match="identity read failed after retry"):
         service.inspect("COM9")
+
+
+def test_usb_inspection_serializes_access_to_the_same_port():
+    class ExclusiveClient(FakeClient):
+        active = 0
+        maximum_active = 0
+
+        def __enter__(self):
+            type(self).active += 1
+            type(self).maximum_active = max(type(self).maximum_active, type(self).active)
+            time.sleep(0.05)
+            return self
+
+        def __exit__(self, *_):
+            type(self).active -= 1
+
+    service = UsbFactoryResetService(ExclusiveClient, ports)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(service.inspect, ("COM9", "COM9")))
+
+    assert all(result["hardware_id"] == "0x0123456789ABCDEF" for result in results)
+    assert ExclusiveClient.maximum_active == 1
 
 
 @pytest.mark.asyncio

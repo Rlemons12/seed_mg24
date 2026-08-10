@@ -1,7 +1,7 @@
 import asyncio
 import secrets
 from dataclasses import dataclass, field
-from threading import Lock
+from threading import Lock, RLock
 from time import monotonic, sleep
 from uuid import uuid4
 
@@ -41,6 +41,12 @@ class UsbFactoryResetService:
         self._confirmations: dict[str, tuple[int, str, str, str, str, float]] = {}
         self._confirmation_lock = Lock()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._port_locks: dict[str, RLock] = {}
+        self._port_locks_guard = Lock()
+
+    def _port_lock(self, port: str) -> RLock:
+        with self._port_locks_guard:
+            return self._port_locks.setdefault(port, RLock())
 
     def ports(self) -> list[dict]:
         return [
@@ -49,20 +55,21 @@ class UsbFactoryResetService:
         ]
 
     def inspect(self, port: str) -> dict:
-        matches = [item for item in self.ports() if item["port"] == port]
-        if len(matches) != 1:
-            raise UsbResetError("exactly one supported board on the explicit port is required")
-        state = None
-        last_error = None
-        for attempt in range(2):
-            try:
-                with self.client_factory(port, timeout=3.0) as client:
-                    state = client.request("read_node_state")["result"]
-                break
-            except (OSError, ProtocolError, RuntimeError, ValueError) as exc:
-                last_error = exc
-                if attempt == 0:
-                    sleep(0.1)
+        with self._port_lock(port):
+            matches = [item for item in self.ports() if item["port"] == port]
+            if len(matches) != 1:
+                raise UsbResetError("exactly one supported board on the explicit port is required")
+            state = None
+            last_error = None
+            for attempt in range(2):
+                try:
+                    with self.client_factory(port, timeout=3.0) as client:
+                        state = client.request("read_node_state")["result"]
+                    break
+                except (OSError, ProtocolError, RuntimeError, ValueError) as exc:
+                    last_error = exc
+                    if attempt == 0:
+                        sleep(0.1)
         if state is None:
             raise UsbResetError(f"sensor USB identity read failed after retry: {last_error}") from last_error
         hardware_id = state.get("hardware_id")
@@ -114,44 +121,46 @@ class UsbFactoryResetService:
                 matches = [item for item in self.ports() if item["port"] == operation.port]
                 if len(matches) != 1:
                     raise UsbResetError("exactly one supported board on the explicit port is required")
-                with self.client_factory(operation.port, timeout=3.0) as client:
-                    before = None
-                    for attempt in range(2):
-                        try:
-                            before = client.request("read_node_state")["result"]
-                            break
-                        except ProtocolError:
-                            if attempt == 0:
-                                sleep(0.1)
-                    if before is None:
-                        raise UsbResetError("sensor USB identity read failed after retry")
-                    if before.get("hardware_id") != operation.hardware_id or before.get("node_id") != operation.device_id:
-                        raise UsbResetError("connected physical sensor does not match the selected gateway sensor")
-                    operation.progress.append("physical_identity_verified")
-                    operation.progress.append("requesting_device_reset_challenge")
-                    prepared = None
-                    for attempt in range(2):
-                        try:
-                            prepared = client.request(
-                                "prepare_factory_reset", reset_protocol_version=2, scope="application_factory",
-                                expected_hardware_id=operation.hardware_id,
-                            )["result"]
-                            break
-                        except ProtocolError:
-                            if attempt == 0:
-                                operation.progress.append("retrying_device_reset_challenge")
-                                sleep(0.1)
-                    if prepared is None:
-                        raise UsbResetError("device reset challenge timed out after retry")
-                    operation.progress.append("device_challenge_received")
-                    if prepared.get("hardware_id") != operation.hardware_id:
-                        raise UsbResetError("device reset challenge identity mismatch")
-                    operation.progress.append("confirming_device_bound_reset")
-                    accepted = client.request(
-                        "confirm_factory_reset", reset_protocol_version=2, scope="application_factory",
-                        expected_hardware_id=operation.hardware_id, operation_id=prepared["operation_id"],
-                        challenge=prepared["challenge"],
-                    )["result"]
+                with self._port_lock(operation.port):
+                    with self.client_factory(operation.port, timeout=3.0) as client:
+                        before = None
+                        for attempt in range(2):
+                            try:
+                                before = client.request("read_node_state")["result"]
+                                break
+                            except ProtocolError:
+                                if attempt == 0:
+                                    sleep(0.1)
+                        if before is None:
+                            raise UsbResetError("sensor USB identity read failed after retry")
+                        if before.get("hardware_id") != operation.hardware_id or before.get("node_id") != operation.device_id:
+                            raise UsbResetError("connected physical sensor does not match the selected gateway sensor")
+                        operation.progress.append("physical_identity_verified")
+                        operation.progress.append("requesting_device_reset_challenge")
+                        prepared = None
+                        for attempt in range(2):
+                            try:
+                                prepared = client.request(
+                                    "prepare_factory_reset", reset_protocol_version=2, scope="application_factory",
+                                    expected_hardware_id=operation.hardware_id,
+                                )["result"]
+                                break
+                            except ProtocolError:
+                                if attempt == 0:
+                                    operation.progress.append("retrying_device_reset_challenge")
+                                    sleep(0.1)
+                        if prepared is None:
+                            raise UsbResetError("device reset challenge timed out after retry")
+                        operation.progress.append("device_challenge_received")
+                        if prepared.get("hardware_id") != operation.hardware_id:
+                            raise UsbResetError("device reset challenge identity mismatch")
+                        operation.progress.append("confirming_device_bound_reset")
+                        sleep(0.1)
+                        accepted = client.request(
+                            "confirm_factory_reset", reset_protocol_version=2, scope="application_factory",
+                            expected_hardware_id=operation.hardware_id, operation_id=prepared["operation_id"],
+                            challenge=prepared["challenge"],
+                        )["result"]
                 if accepted.get("operation_id") != prepared.get("operation_id"):
                     raise UsbResetError("reset operation correlation mismatch")
                 operation.state = "rebooting"

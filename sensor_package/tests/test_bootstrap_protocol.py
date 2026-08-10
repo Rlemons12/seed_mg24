@@ -33,6 +33,17 @@ def test_unknown_action_and_oversize_rejected():
         encode_request("x", "restore_configuration", junk="x" * 800)
 
 
+def test_destructive_confirmation_uses_bounded_compact_wire_frame():
+    line = encode_request(
+        "a" * 16, "confirm_factory_reset", reset_protocol_version=2, scope="application_factory",
+        expected_hardware_id="0x0123456789ABCDEF", operation_id="b" * 32, challenge="c" * 32,
+    )
+    assert len(line) <= 256
+    assert b'"a":"confirm_factory_reset"' in line
+    assert b'"h":"0x0123456789ABCDEF"' in line
+    assert b'"op":"' in line and b'"c":"' in line
+
+
 def test_backup_hash_validation():
     backup = {
         "backup_schema_version": 1,

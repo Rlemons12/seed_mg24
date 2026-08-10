@@ -44,7 +44,18 @@ def encode_request(request_id: str, action: str, **fields: Any) -> bytes:
         raise ProtocolError("invalid request_id")
     if action not in ALLOWED_ACTIONS:
         raise ProtocolError("unknown action")
-    body = {"type": "bootstrap_request", "schema_version": SCHEMA_VERSION, "request_id": request_id, "action": action, **fields}
+    if action == "confirm_factory_reset":
+        aliases = {
+            "reset_protocol_version": "rv", "scope": "s", "expected_hardware_id": "h",
+            "operation_id": "op", "challenge": "c",
+        }
+        body = {"t": "bootstrap_request", "v": SCHEMA_VERSION, "id": request_id, "a": action}
+        body.update({aliases.get(key, key): value for key, value in fields.items()})
+    else:
+        body = {
+            "type": "bootstrap_request", "schema_version": SCHEMA_VERSION,
+            "request_id": request_id, "action": action, **fields,
+        }
     line = PREFIX.encode() + canonical_json(body) + b"\n"
     if len(line) > MAX_LINE_BYTES:
         raise ProtocolError("request exceeds line limit")

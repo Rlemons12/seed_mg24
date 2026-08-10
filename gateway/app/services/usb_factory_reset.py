@@ -28,12 +28,13 @@ class UsbResetOperation:
     physical_reset_complete: bool = False
     gateway_cleanup_complete: bool = False
     post_reset: dict | None = None
+    reset_command_accepted: bool = False
 
 
 class UsbFactoryResetService:
     VID, PID = 0x2886, 0x0062
 
-    def __init__(self, client_factory=BootstrapSerialClient, ports_factory=None, reboot_timeout: float = 30.0) -> None:
+    def __init__(self, client_factory=BootstrapSerialClient, ports_factory=None, reboot_timeout: float = 90.0) -> None:
         self.client_factory = client_factory
         self.ports_factory = ports_factory or list_ports.comports
         self.reboot_timeout = reboot_timeout
@@ -163,6 +164,7 @@ class UsbFactoryResetService:
                         )["result"]
                 if accepted.get("operation_id") != prepared.get("operation_id"):
                     raise UsbResetError("reset operation correlation mismatch")
+                operation.reset_command_accepted = True
                 operation.state = "rebooting"
                 operation.progress.append("pre_reboot_key_deletion_verified")
                 deadline = monotonic() + self.reboot_timeout
@@ -178,7 +180,10 @@ class UsbFactoryResetService:
                             verified = state
                             break
                 if verified is None:
-                    raise UsbResetError("same physical sensor did not re-enumerate")
+                    raise UsbResetError(
+                        "reset was accepted, but the same physical sensor did not become readable over USB; "
+                        "unplug and reconnect it, then use read-only USB reconciliation"
+                    )
                 if verified.get("node_id") is not None or verified.get("identity_status") != "unprovisioned":
                     raise UsbResetError("post-reset sensor is not unprovisioned")
                 if not before.get("firmware_version") or verified.get("firmware_version") != before.get("firmware_version"):

@@ -168,6 +168,35 @@ async def test_reset_retries_only_non_destructive_challenge_preparation():
     assert "retrying_device_reset_challenge" in operation.progress
 
 
+@pytest.mark.asyncio
+async def test_reset_waits_for_delayed_windows_usb_reenumeration():
+    class DelayedPorts:
+        calls = 0
+
+        def __call__(self):
+            type(self).calls += 1
+            if FakeClient.state.get("identity_status") == "unprovisioned" and type(self).calls < 6:
+                return []
+            return ports()
+
+    FakeClient.state = {
+        **FakeClient.state, "node_id": "MG24-0001", "identity_status": "ok", "provisioning_state": "provisioned",
+    }
+    delayed_ports = DelayedPorts()
+    service = UsbFactoryResetService(FakeClient, delayed_ports, reboot_timeout=4)
+    token, _ = service.prepare(1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    operation = service.start(token, 1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+
+    for _ in range(50):
+        if operation.state in {"physical_complete", "failed"}:
+            break
+        await asyncio.sleep(0.1)
+
+    assert operation.state == "physical_complete"
+    assert operation.reset_command_accepted is True
+    assert operation.post_reset["hardware_id"] == "0x0123456789ABCDEF"
+
+
 def test_factory_reset_api_is_loopback_same_origin_and_hardware_bound(client, app, compatible_discovery):
     FakeClient.state = {
         **FakeClient.state,

@@ -91,7 +91,9 @@ window.MG24ResetReregister = (() => {
       setPrimary("Execute USB factory reset", executeReset);
       const cancel=document.createElement("button");cancel.type="button";cancel.textContent="Cancel prepared reset";cancel.onclick=()=>run(cancelReset);controls.append(cancel);
     } else if (["reset_in_progress", "waiting_for_usb_reenumeration", "post_reset_verification"].includes(operation.state)) {
-      controls.append(Object.assign(document.createElement("p"), {textContent:"The destructive command will not be repeated. This screen only polls durable workflow status."}));
+      controls.append(Object.assign(document.createElement("p"), {textContent:operation.state === "waiting_for_usb_reenumeration" ?
+        "The reset was accepted. USB recovery is automatic. If the sensor has not returned after 10 seconds, unplug it, wait 5 seconds, and reconnect it; keep this window open." :
+        "The destructive command will not be repeated. This screen only polls durable workflow status."}));
       setPrimary("Reset in progress", async()=>{}, false); schedulePoll();
       const reconcile=document.createElement("button");reconcile.type="button";reconcile.textContent="Reconcile after gateway restart";
       reconcile.onclick=()=>run(async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/reconcile-reset`,{expected_hardware_id:operation.hardware_id});});controls.append(reconcile);
@@ -139,8 +141,10 @@ window.MG24ResetReregister = (() => {
     } else if (operation.state === "recoverable_error" && operation.error?.code === "ble_provisioning_failed") {
       controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"The physical reset remains complete. Retry BLE provisioning; the durable device protocol safely resumes read-back when identity was already written."}));
       setPrimary("Retry BLE Provisioning",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
-    } else if (operation.state === "recoverable_error" && operation.error?.code === "reset_failed") {
-      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"Read the sensor over USB to determine whether the reset completed. This action never repeats the reset command."}));
+    } else if (operation.state === "recoverable_error" && ["reset_failed", "usb_reenumeration_timeout"].includes(operation.error?.code)) {
+      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:operation.error?.code === "usb_reenumeration_timeout" ?
+        "The reset command was accepted, but Windows did not make the sensor readable in time. Unplug the same sensor, wait 5 seconds, reconnect it, then reconcile. Reconciliation never repeats factory reset." :
+        "Read the sensor over USB to determine whether the reset completed. This action never repeats the reset command."}));
       setPrimary("Reconcile USB state",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/reconcile-reset`,{expected_hardware_id:operation.hardware_id});});
     } else {
       controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"Reconnect the same sensor over USB and use read-only reconciliation. Do not repeat factory reset automatically."}));

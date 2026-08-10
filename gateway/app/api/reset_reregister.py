@@ -294,8 +294,15 @@ async def _monitor_reset(request: Request, workflow_id: str, reset_id: str) -> N
         service = ResetReregisterWorkflowService(session)
         item = service.get(workflow_id)
         if not reset.physical_reset_complete:
-            service.transition(item, "recoverable_error", progress="Factory reset failed", error_code="reset_failed",
-                               error_message=reset.error or "Physical reset did not complete.")
+            reset_was_accepted = reset.reset_command_accepted
+            service.transition(
+                item,
+                "recoverable_error",
+                progress=("Reset accepted; reconnect USB and reconcile read-only"
+                          if reset_was_accepted else "Factory reset failed"),
+                error_code=("usb_reenumeration_timeout" if reset_was_accepted else "reset_failed"),
+                error_message=reset.error or "Physical reset did not complete.",
+            )
             return
         service.transition(item, "post_reset_verification", progress="Verifying factory-default state after reboot")
         device = session.get(RegisteredDevice, item.source_record_id)

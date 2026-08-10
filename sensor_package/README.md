@@ -6,6 +6,11 @@ The reproducible toolchain declaration is `toolchain.json`: Arduino CLI 1.5.1, t
 
 Production firmware is flashed initially with an unassigned runtime identity. Assign and verify the permanent `node_id` afterward through USB using `scripts/provision_node.ps1`; the identity is stored in redundant NVM3 records. The optional ignored local header remains useful only for legacy builds and does not override a valid persistent identity.
 
+The unprovisioned firmware exposes a read-only, non-advertised onboarding-identity characteristic derived from the
+immutable hardware ID. It uses the package-local `sha256_minimal` implementation because SHA-256 headers may be present
+while the corresponding PSA/mbedTLS implementation is not linked by every Silicon Labs Arduino-core configuration.
+Provisioning hides that identity, writes configuration before the permanent node identity, and verifies read-back.
+
 PowerShell: `./sensor_package/scripts/compile.ps1`, then—only after reviewing the physical-write checkpoint—`./sensor_package/scripts/flash.ps1 -Port COM3`. Linux equivalents use `compile.sh` and `flash.sh`. The FQBN includes `protocol_stack=ble_silabs`; neither wrapper performs an erase or provisions identity.
 
 Read-only state: `./sensor_package/scripts/read_node.ps1 -Port COM3`. Initial identity: `provision_node.ps1 -Port COM3 -NodeId MG24-0001`. Use `backup_node.ps1`, `restore_node.ps1`, and `verify_node.ps1` for application state. List attached boards with `list_nodes.ps1`. Factory reset requires an explicit port and immutable hardware ID; `factory_reset.ps1 -Port COM3 -HardwareId 0x0123456789ABCDEF -Confirm` then requires typing that exact hardware ID and uses a short-lived hardware-bound challenge. Backups belong under ignored `test_output/` or another protected deployment directory. See [`../docs/sensor-lifecycle.md`](../docs/sensor-lifecycle.md) for reset recovery and preserved data.

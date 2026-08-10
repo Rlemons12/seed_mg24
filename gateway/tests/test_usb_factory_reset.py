@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.app.services.usb_factory_reset import UsbFactoryResetService, UsbResetError
+from sensor_package.tools.bootstrap.protocol import ProtocolError
 
 
 class FakeClient:
@@ -82,6 +83,65 @@ def test_usb_reset_rejects_wrong_sensor_and_ambiguous_port():
         service.prepare(1, "MG24-9999", "0x0123456789ABCDEF", "COM9")
     with pytest.raises(UsbResetError, match="exactly one"):
         service.prepare(1, "MG24-0001", "0x0123456789ABCDEF", "COM8")
+
+
+def test_usb_inspection_retries_transient_protocol_timeout():
+    class FlakyClient(FakeClient):
+        attempts = 0
+
+        def request(self, action, **fields):
+            type(self).attempts += 1
+            if type(self).attempts == 1:
+                raise ProtocolError("bootstrap response timeout")
+            return super().request(action, **fields)
+
+    service = UsbFactoryResetService(FlakyClient, ports)
+
+    assert service.inspect("COM9")["hardware_id"] == "0x0123456789ABCDEF"
+    assert FlakyClient.attempts == 2
+
+
+def test_usb_inspection_normalizes_persistent_protocol_timeout():
+    class TimeoutClient(FakeClient):
+        def request(self, _action, **_fields):
+            raise ProtocolError("bootstrap response timeout")
+
+    service = UsbFactoryResetService(TimeoutClient, ports)
+
+    with pytest.raises(UsbResetError, match="identity read failed after retry"):
+        service.inspect("COM9")
+
+
+@pytest.mark.asyncio
+async def test_reset_retries_only_non_destructive_challenge_preparation():
+    class FlakyPrepareClient(FakeClient):
+        prepare_attempts = 0
+        confirm_attempts = 0
+
+        def request(self, action, **fields):
+            if action == "prepare_factory_reset":
+                type(self).prepare_attempts += 1
+                if type(self).prepare_attempts == 1:
+                    raise ProtocolError("bootstrap response timeout")
+            if action == "confirm_factory_reset":
+                type(self).confirm_attempts += 1
+            return super().request(action, **fields)
+
+    FakeClient.state = {
+        **FakeClient.state, "node_id": "MG24-0001", "identity_status": "ok", "provisioning_state": "provisioned",
+    }
+    service = UsbFactoryResetService(FlakyPrepareClient, ports, reboot_timeout=1)
+    token, _ = service.prepare(1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    operation = service.start(token, 1, "MG24-0001", "0x0123456789ABCDEF", "COM9")
+    for _ in range(15):
+        if operation.state in {"physical_complete", "failed"}:
+            break
+        await asyncio.sleep(0.1)
+
+    assert operation.state == "physical_complete"
+    assert FlakyPrepareClient.prepare_attempts == 2
+    assert FlakyPrepareClient.confirm_attempts == 1
+    assert "retrying_device_reset_challenge" in operation.progress
 
 
 def test_factory_reset_api_is_loopback_same_origin_and_hardware_bound(client, app, compatible_discovery):

@@ -48,8 +48,8 @@ window.MG24ResetReregister = (() => {
   }
   function setPrimary(label, action, enabled = true) { const button = id("rr-primary"); button.textContent = label;
     button.disabled = pending || !enabled; button.onclick = () => run(action); }
-  async function run(action) { if (pending) return; pending = true; render(); try { await action(); }
-    catch (error) { id("rr-error").textContent = error.message; } finally { pending = false; render(); } }
+  async function run(action) { if (pending) return; pending = true; render(); let actionError = ""; try { await action(); }
+    catch (error) { actionError = error.message; } finally { pending = false; render(); if(actionError)id("rr-error").textContent=actionError; } }
   function summary() {
     const result = safeResult();
     return `${selectedNode?.display_name || operation.source_display_name} (${operation.source_device_id})\n` +
@@ -97,21 +97,28 @@ window.MG24ResetReregister = (() => {
       reconcile.onclick=()=>run(async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/reconcile-reset`,{expected_hardware_id:operation.hardware_id});});controls.append(reconcile);
     } else if (operation.state === "unprovisioned_ready_for_registration" || operation.state === "registration_details_required") {
       const choice = document.createElement("select"); choice.id="rr-choice"; choice.append(new Option("Reuse previous registration (Restore/Reapprove)","restore"), new Option("Register as a new sensor","new"));
-      const sensorId=input("rr-device-id",operation.source_device_id), name=input("rr-device-name",operation.source_display_name), location=input("rr-location",selectedNode?.location || "");
+      const editingNewIdentity=operation.state==="registration_details_required";choice.value=editingNewIdentity?"new":"restore";
+      const sensorId=input("rr-device-id",editingNewIdentity?"":operation.source_device_id), name=input("rr-device-name",operation.source_display_name), location=input("rr-location",selectedNode?.location || "");
       controls.append(field("Registration choice",choice),field("Sensor ID",sensorId),field("Human-readable name",name),field("Installation/location",location),
         Object.assign(document.createElement("p"),{className:"muted",textContent:"New registration leaves old telemetry attached to the archived record. Previous identity is never reused automatically."}));
       choice.addEventListener("change",()=>{ if(choice.value==="restore"){sensorId.value=operation.source_device_id;name.value=operation.source_display_name;} });
+      sensorId.addEventListener("input",()=>{if(sensorId.value!==operation.source_device_id)choice.value="new";});
       setPrimary("Confirm registration details", async()=>{ operation=await post(`/api/reset-reregister/${operation.operation_id}/registration`,
         {choice:choice.value,device_id:sensorId.value,display_name:name.value,location:location.value||null,configuration:config()}); });
     } else if (operation.state === "searching_for_reset_sensor_ble") {
       const box=document.createElement("div");box.id="rr-ble-list";controls.append(Object.assign(document.createElement("p"),{textContent:"Scan for the reset sensor in unprovisioned onboarding mode. Multiple candidates require explicit selection."}),box);
       renderBleCandidates(box);
       setPrimary("Scan for reset sensor", scanBle);
+      const edit=document.createElement("button");edit.type="button";edit.textContent="Change registration details";
+      edit.onclick=()=>run(async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/edit-registration`);});controls.append(edit);
     } else if (operation.state === "ble_identity_matched") {
       const box=document.createElement("div");controls.append(Object.assign(document.createElement("p"),{textContent:`Expected onboarding identity: ${expectedIdentityHint || "verified by gateway"}. RSSI and BLE address are informational only.`}),box);
       renderBleCandidates(box);
       controls.append(Object.assign(document.createElement("p"),{textContent:"Provisioning writes configuration first and identity last, then verifies read-back and hides the bootstrap identity before gateway registration."}));
       setPrimary("Provision This Sensor", async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
+    } else if (operation.state === "gateway_registration_in_progress") {
+      controls.append(Object.assign(document.createElement("p"),{textContent:"Sensor provisioning is verified. Continue the read-only gateway registration step; the sensor identity will not be written again."}));
+      setPrimary("Continue Gateway Registration",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
     } else if (operation.state === "network_verification_in_progress") {
       controls.append(Object.assign(document.createElement("p"),{textContent:"Registered—waiting for first telemetry. You may retry the connection check or finish later."}));
       setPrimary("Retry connection verification", async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/verify-network`);});
@@ -132,6 +139,9 @@ window.MG24ResetReregister = (() => {
     } else if (operation.state === "recoverable_error" && operation.error?.code === "ble_provisioning_failed") {
       controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"The physical reset remains complete. Retry BLE provisioning; the durable device protocol safely resumes read-back when identity was already written."}));
       setPrimary("Retry BLE Provisioning",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/provision`);});
+    } else if (operation.state === "recoverable_error" && operation.error?.code === "reset_failed") {
+      controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"Read the sensor over USB to determine whether the reset completed. This action never repeats the reset command."}));
+      setPrimary("Reconcile USB state",async()=>{operation=await post(`/api/reset-reregister/${operation.operation_id}/reconcile-reset`,{expected_hardware_id:operation.hardware_id});});
     } else {
       controls.append(Object.assign(document.createElement("p"),{className:"warning",textContent:"Reconnect the same sensor over USB and use read-only reconciliation. Do not repeat factory reset automatically."}));
       setPrimary("Resume setup", refreshOperation);
@@ -151,7 +161,13 @@ window.MG24ResetReregister = (() => {
     if(!found.candidates.some((candidate)=>candidate.verification_status==="verified_match"))throw new Error("This sensor cannot be safely matched to the device verified over USB. Provisioning is blocked."); }
   async function refreshOperation(){operation=await api(`/api/reset-reregister/${operation.operation_id}`);render();}
   function schedulePoll(){clearTimeout(pollTimer);pollTimer=setTimeout(async()=>{await refreshOperation();if(["reset_in_progress","waiting_for_usb_reenumeration","post_reset_verification"].includes(operation.state))schedulePoll();},750);}
-  async function open(node){selectedNode=node;operation=await post("/api/reset-reregister/start",{device_id:node.node_id});dialog.showModal();render();}
+  async function open(node){selectedNode=node;try{operation=await post("/api/reset-reregister/start",{device_id:node.node_id});}
+    catch(error){if(error.code!=="hardware_id_required")throw error;const boards=await api("/api/factory-reset/boards");
+      const matches=boards.filter((board)=>board.identity_status==="ok"&&board.node_id===node.node_id&&board.hardware_id);
+      if(matches.length!==1)throw new Error(`Connect only ${node.node_id} by USB, then try Reset and Re-register again.`);
+      await post("/api/reset-reregister/associate-usb",{device_id:node.node_id,port:matches[0].port,expected_hardware_id:matches[0].hardware_id});
+      operation=await post("/api/reset-reregister/start",{device_id:node.node_id});}
+    dialog.showModal();render();}
   async function resume(){const rows=await api("/api/reset-reregister/incomplete");if(rows.length===1){operation=rows[0];selectedNode=null;dialog.showModal();render();}}
   function init(){document.body.insertAdjacentHTML("beforeend",markup());dialog=id("reset-reregister-dialog");id("rr-close").onclick=()=>dialog.close();dialog.addEventListener("close",()=>clearTimeout(pollTimer));resume().catch(()=>{});}
   return {init,open};

@@ -140,6 +140,10 @@ class SensorProvisioningService:
             with self.session_factory() as session:
                 repository = InstallationRepository(session)
                 installation = repository.get(installation_id)
+                if installation is None or installation.archived:
+                    raise ProvisioningError("installation not found")
+                if installation.provisioning_state == "active":
+                    return installation
                 devices = DeviceRepository(session)
                 node = devices.get(node_id)
                 if node is None or node.compatibility_status != "compatible":

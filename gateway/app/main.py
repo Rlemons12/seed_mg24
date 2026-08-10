@@ -70,7 +70,9 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     catalog_path = settings.firmware_catalog_path
     if not catalog_path.is_absolute():
         catalog_path = REPOSITORY_DIR / catalog_path
-    firmware_catalog = ApprovedFirmwareCatalog(REPOSITORY_DIR, catalog_path)
+    firmware_catalog = ApprovedFirmwareCatalog(
+        REPOSITORY_DIR, catalog_path, developer_approval_enabled=settings.developer_firmware_approval
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -169,7 +171,8 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         timeout_seconds=settings.provisioning_timeout_seconds,
     )
     app.state.firmware_catalog = firmware_catalog
-    app.state.firmware_installer = UsbFirmwareInstaller(firmware_catalog, REPOSITORY_DIR)
+    app.state.firmware_installer = UsbFirmwareInstaller(firmware_catalog, REPOSITORY_DIR, cli=settings.arduino_cli)
+    app.state.settings = settings
     app.state.scanner = BleScannerService(settings.scan_duration_seconds, settings.discovery_ttl_seconds, scanner_factory)
     app.state.ble_manager = BleManager(settings, telemetry_service.ingest, lambda *_: None, client_factory=client_factory)
     app.dependency_overrides[get_session] = session_dependency(session_factory)
@@ -193,7 +196,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "overview"},
+            context={"dashboard_build": f"{__version__}-module-shell-2", "current_module": "overview"},
         )
 
     @app.get("/installations", include_in_schema=False)
@@ -201,7 +204,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="installations.html",
-            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "installations"},
+            context={"dashboard_build": f"{__version__}-module-shell-2", "current_module": "installations"},
         )
 
     @app.get("/system-health", include_in_schema=False)
@@ -209,7 +212,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="system_health.html",
-            context={"dashboard_build": f"{__version__}-module-shell-1", "current_module": "system-health"},
+            context={"dashboard_build": f"{__version__}-module-shell-2", "current_module": "system-health"},
         )
 
     @app.exception_handler(HTTPException)

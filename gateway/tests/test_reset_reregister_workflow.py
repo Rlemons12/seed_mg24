@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import func, select
 
 from gateway.app.ble.onboarding_identity import derive_onboarding_identity
-from gateway.app.models import Reading, SensorReregistrationWorkflow
+from gateway.app.models import DeviceLifecycleEvent, Reading, SensorReregistrationWorkflow
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.services.ble_provisioning import BleProvisioningError
 
@@ -40,6 +40,69 @@ def test_start_requires_immutable_identity_and_persists_resumable_safe_state(cli
     serialized = json.dumps(first.json()).lower()
     assert "confirmation_token" not in serialized and "challenge" not in serialized and "secret" not in serialized
     assert client.get("/api/reset-reregister/incomplete").json()[0]["operation_id"] == first.json()["operation_id"]
+
+
+def test_usb_association_requires_exact_current_node_identity(client, app, compatible_discovery):
+    response = client.post("/api/devices", json={
+        "device_id": "MG24-0001", "display_name": "Boiler sensor", "discovery_address": compatible_discovery.address,
+    })
+    assert response.status_code == 201
+
+    class FakeUsb:
+        def inspect(self, port):
+            assert port == "COM7"
+            return {"port": port, "hardware_id": "0x0123456789ABCDEF", "node_id": "MG24-0001", "identity_status": "ok"}
+
+    app.state.usb_factory_reset = FakeUsb()
+    mismatch = client.post("/api/reset-reregister/associate-usb", json={
+        "device_id": "MG24-0001", "port": "COM7", "expected_hardware_id": "0xFEDCBA9876543210",
+    })
+    associated = client.post("/api/reset-reregister/associate-usb", json={
+        "device_id": "MG24-0001", "port": "COM7", "expected_hardware_id": "0x0123456789ABCDEF",
+    })
+
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "physical_identity_mismatch"
+    assert associated.status_code == 200
+    assert associated.json()["status"] == "associated"
+    assert client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"}).status_code == 200
+
+
+def test_reconcile_returns_to_safe_retry_when_reset_was_not_applied(client, app, compatible_discovery):
+    register_with_identity(client, app, compatible_discovery)
+    operation = client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"}).json()
+    with app.state.session_factory() as session:
+        workflow = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        workflow.state = "recoverable_error"
+        workflow.backup_status = "complete"
+        workflow.selected_port = "COM7"
+        workflow.reset_operation_id = "reset-attempt"
+        device = DeviceRepository(session).get("MG24-0001")
+        device.factory_reset_status = "reset_pending"
+        session.commit()
+
+    class IntactUsb:
+        def ports(self):
+            return [{"port": "COM7"}]
+
+        def inspect(self, port):
+            assert port == "COM7"
+            return {
+                "hardware_id": "0x0123456789ABCDEF", "node_id": "MG24-0001",
+                "identity_status": "ok", "provisioning_state": "provisioned", "configuration_status": "ok",
+            }
+
+    app.state.usb_factory_reset = IntactUsb()
+    response = client.post(
+        f"/api/reset-reregister/{operation['operation_id']}/reconcile-reset",
+        json={"expected_hardware_id": "0x0123456789ABCDEF"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "configuration_backup_ready"
+    assert response.json()["result"]["reconciliation"]["physical_reset_applied"] is False
+    with app.state.session_factory() as session:
+        assert DeviceRepository(session).get("MG24-0001").factory_reset_status == "not_requested"
 
 
 def test_usb_selection_requires_exact_hardware_and_backup_is_allowlisted(client, app, compatible_discovery):
@@ -92,6 +155,54 @@ def test_registration_choice_rejects_duplicate_and_never_moves_history(client, a
         assert session.scalar(select(func.count()).select_from(Reading)) == 1
 
 
+def test_registration_details_can_be_reopened_only_before_provisioning(client, app, compatible_discovery):
+    register_with_identity(client, app, compatible_discovery)
+    operation = client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"}).json()
+    with app.state.session_factory() as session:
+        row = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        row.state = "searching_for_reset_sensor_ble"
+        row.registration_choice = "restore"
+        row.target_device_id = "MG24-0001"
+        row.target_display_name = "Boiler sensor"
+        row.configuration_json = "{}"
+        session.commit()
+
+    reopened = client.post(f"/api/reset-reregister/{operation['operation_id']}/edit-registration", json={})
+
+    assert reopened.status_code == 200
+    assert reopened.json()["state"] == "registration_details_required"
+    assert reopened.json()["registration_choice"] is None
+    assert reopened.json()["target_device_id"] is None
+    with app.state.session_factory() as session:
+        row = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        row.state = "provisioning_in_progress"
+        session.commit()
+    blocked = client.post(f"/api/reset-reregister/{operation['operation_id']}/edit-registration", json={})
+    assert blocked.status_code == 409
+
+
+def test_revised_registration_choice_creates_a_distinct_audit_event(client, app, compatible_discovery):
+    register_with_identity(client, app, compatible_discovery)
+    operation = client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"}).json()
+    with app.state.session_factory() as session:
+        row = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        row.state = "unprovisioned_ready_for_registration"
+        session.commit()
+    restore = {
+        "choice": "restore", "device_id": "MG24-0001", "display_name": "Boiler sensor",
+        "location": None, "configuration": {},
+    }
+    assert client.post(f"/api/reset-reregister/{operation['operation_id']}/registration", json=restore).status_code == 200
+    assert client.post(f"/api/reset-reregister/{operation['operation_id']}/edit-registration", json={}).status_code == 200
+
+    revised = client.post(f"/api/reset-reregister/{operation['operation_id']}/registration", json={
+        **restore, "choice": "new", "device_id": "AU-VS-M-0001", "display_name": "au-vs-m-0001",
+    })
+
+    assert revised.status_code == 200
+    assert revised.json()["target_device_id"] == "AU-VS-M-0001"
+
+
 def test_workflow_endpoints_enforce_same_origin_and_usb_loopback(client, app, compatible_discovery):
     register_with_identity(client, app, compatible_discovery)
     assert client.post("/api/reset-reregister/start", json={"device_id": "MG24-0001"},
@@ -113,6 +224,11 @@ def test_dashboard_wizard_is_focused_accessible_and_keeps_separate_actions():
     template = (root / "gateway/app/templates/index.html").read_text(encoding="utf-8")
     assert "Reset and Re-register Sensor" in script and "workflow-stepper" in script
     assert 'role="status" aria-live="polite"' in script and 'aria-label="Close reset and re-register workflow"' in script
+    assert 'if(sensorId.value!==operation.source_device_id)choice.value="new"' in script
+    assert 'if(actionError)id("rr-error").textContent=actionError' in script
+    assert 'choice.value=editingNewIdentity?"new":"restore"' in script
+    assert 'operation.state === "gateway_registration_in_progress"' in script
+    assert "Continue Gateway Registration" in script
     assert "alert(" not in script and "confirm(" not in script and "prompt(" not in script
     assert "confirmation_token" not in script and "challenge" not in script
     assert "Remove from network" in app_script and "Restore/Reapprove" in app_script
@@ -154,6 +270,55 @@ def test_ble_scan_selects_only_exact_usb_identity_and_ignores_rssi(client, app, 
     assert candidates[compatible_discovery.address]["verification_status"] == "verified_match"
     assert candidates[wrong.address]["verification_status"] == "non_match"
     assert not candidates[wrong.address]["provisioning_allowed"]
+
+
+def test_provision_registers_after_discovery_cache_expires_and_retry_is_read_only(client, app, compatible_discovery):
+    operation = prepare_ble_workflow(client, app, compatible_discovery)
+    with app.state.session_factory() as session:
+        row = session.get(SensorReregistrationWorkflow, operation["operation_id"])
+        row.state = "ble_identity_matched"
+        row.registration_choice = "new"
+        row.target_device_id = "AU-VS-M-0001"
+        row.target_display_name = "Vibration sensor"
+        row.target_ble_address = compatible_discovery.address
+        row.configuration_json = json.dumps({
+            "sample_interval_ms": 100, "processing_interval_ms": 1000, "report_interval_ms": 5000,
+            "heartbeat_interval_ms": 30000, "filter_type": "none", "filter_window": 1, "enabled": True,
+        })
+        result = json.loads(row.result_json)
+        result["sensor_provisioned"] = True
+        row.result_json = json.dumps(result)
+        source = DeviceRepository(session).get("MG24-0001")
+        source.archived = True
+        source.lifecycle_state = "removed"
+        session.add(DeviceLifecycleEvent(
+            operation_id=f"{operation['operation_id']}-provision", event_type="ble_provisioned",
+            device_id="AU-VS-M-0001", display_name="Vibration sensor", hardware_id="0x0123456789ABCDEF",
+            ble_address=compatible_discovery.address, connectivity_state="connecting",
+            method="reset_reregister_workflow", factory_reset_requested=True, result="success", detail_json="{}",
+        ))
+        session.commit()
+    app.state.scanner._discoveries.clear()
+
+    class ReadOnlyResumeProvisioner:
+        async def provision(self, *_args, **_kwargs):
+            raise AssertionError("retry must not repeat provisioning")
+
+        async def read_state(self, address):
+            assert address == compatible_discovery.address
+            return {"metadata": {"node_id": "AU-VS-M-0001"}, "capabilities": {},
+                    "readback": {"id": "AU-VS-M-0001"}}
+
+    app.state.node_provisioner = ReadOnlyResumeProvisioner()
+    response = client.post(f"/api/reset-reregister/{operation['operation_id']}/provision", json={})
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "network_verification_in_progress"
+    with app.state.session_factory() as session:
+        device = DeviceRepository(session).get("AU-VS-M-0001")
+        assert device is not None and device.ble_address == compatible_discovery.address
+        assert session.scalar(select(func.count()).select_from(DeviceLifecycleEvent).where(
+            DeviceLifecycleEvent.operation_id == f"{operation['operation_id']}-provision")) == 1
 
 
 def test_duplicate_claimed_identity_blocks_and_manual_selection_cannot_bypass(client, app, compatible_discovery):

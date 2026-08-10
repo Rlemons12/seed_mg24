@@ -4,9 +4,11 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+REPOSITORY_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="SEED_MG24_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=REPOSITORY_ENV_FILE, env_prefix="SEED_MG24_", extra="ignore")
 
     database_url: str = "sqlite:///./data/seed_mg24.db"
     host: str = "0.0.0.0"
@@ -29,6 +31,8 @@ class Settings(BaseSettings):
     max_profile_upload_bytes: int = Field(65536, ge=1024, le=1048576)
     provisioning_timeout_seconds: float = Field(10.0, ge=1.0, le=120.0)
     firmware_catalog_path: Path = Path("./sensor_package/approved_firmware.json")
+    arduino_cli: str = "arduino-cli"
+    developer_firmware_approval: bool = False
     gateway_instance_lock: bool = True
 
     @field_validator("log_level")

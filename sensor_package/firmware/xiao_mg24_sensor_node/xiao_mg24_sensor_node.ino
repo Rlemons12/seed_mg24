@@ -14,7 +14,7 @@
 #include "silabs_additional.h"
 #if defined(ARDUINO_SILABS_STACK_BLE_SILABS)
 #include "sl_bluetooth.h"
-#include "psa/crypto.h"
+#include "sha256_minimal.h"
 #define BLE_SUPPORTED 1
 #else
 #define BLE_SUPPORTED 0
@@ -767,22 +767,14 @@ void ble_refresh_onboarding_identity() {
     memcpy(digest_input, domain, sizeof(domain) - 1);
     memcpy(digest_input + sizeof(domain) - 1, canonical_hardware_id, sizeof(canonical_hardware_id) - 1);
     unsigned char digest[32];
-    size_t digest_length = 0;
-    psa_status_t hash_status = psa_hash_compute(PSA_ALG_SHA_256, (const uint8_t*)digest_input, sizeof(digest_input),
-                                                digest, sizeof(digest), &digest_length);
-    if (hash_status != PSA_SUCCESS || digest_length != sizeof(digest)) {
-      snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
-               "{\"schema_version\":1,\"provisioning_state\":\"identity_unavailable\",\"protocol_version\":\"%s\"}",
-               PROTOCOL_VERSION);
-    } else {
-      char encoded[33];
-      for (size_t index = 0; index < 16; ++index) snprintf(encoded + index * 2, 3, "%02x", digest[index]);
-      const char* onboarding_state = reset_recovery_status == StoreStatus::Ok ? "unprovisioned" : "recovery";
-      snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
-               "{\"schema_version\":1,\"onboarding_identity\":\"%s\",\"provisioning_state\":\"%s\","
-               "\"protocol_version\":\"%s\",\"firmware_version\":\"%s\"}",
-               encoded, onboarding_state, PROTOCOL_VERSION, FIRMWARE_VERSION);
-    }
+    sha256_compute((const uint8_t*)digest_input, sizeof(digest_input), digest);
+    char encoded[33];
+    for (size_t index = 0; index < 16; ++index) snprintf(encoded + index * 2, 3, "%02x", digest[index]);
+    const char* onboarding_state = reset_recovery_status == StoreStatus::Ok ? "unprovisioned" : "recovery";
+    snprintf(onboarding_identity_json, sizeof(onboarding_identity_json),
+             "{\"schema_version\":1,\"onboarding_identity\":\"%s\",\"provisioning_state\":\"%s\","
+             "\"protocol_version\":\"%s\",\"firmware_version\":\"%s\"}",
+             encoded, onboarding_state, PROTOCOL_VERSION, FIRMWARE_VERSION);
   }
   ble_write_attribute_chunks(ble_onboarding_identity_characteristic_handle,
                              (const uint8_t*)onboarding_identity_json, strlen(onboarding_identity_json));

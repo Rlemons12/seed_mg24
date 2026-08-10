@@ -32,7 +32,8 @@ def test_onboarding_identity_is_read_only_bootstrap_scoped_and_not_advertised():
     sketch = (FIRMWARE / "xiao_mg24_sensor_node.ino").read_text(encoding="utf-8")
     identity_block = sketch.split("onboarding_identity_characteristic_uuid", 1)[1]
     assert 'const char domain[] = "MG24-ONBOARDING-V1"' in sketch
-    assert "psa_hash_compute" in sketch and "PSA_ALG_SHA_256" in sketch and "getDeviceUniqueId()" in sketch
+    assert '#include "sha256_minimal.h"' in sketch
+    assert "sha256_compute" in sketch and "getDeviceUniqueId()" in sketch
     assert "for (size_t index = 0; index < 16; ++index)" in sketch
     assert "SL_BT_GATTDB_CHARACTERISTIC_READ" in identity_block
     assert "SL_BT_GATTDB_CHARACTERISTIC_WRITE" not in identity_block.split("app_assert_status(sc);", 1)[0]

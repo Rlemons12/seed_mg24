@@ -1,5 +1,7 @@
 import asyncio
 import json
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -19,12 +21,12 @@ from gateway.app.models import (
     SensorInstallation,
     SensorReregistrationWorkflow,
 )
-from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.repositories.device_repository import DeviceRepository, DuplicateDeviceError
 from gateway.app.request_security import require_bounded_same_origin_json, require_loopback
-from gateway.app.schemas import DeviceCreate, InstallationConfiguration
+from gateway.app.schemas import DeviceCreate, Discovery, InstallationConfiguration
 from gateway.app.services.ble_provisioning import BleProvisioningError
 from gateway.app.services.device_lifecycle_service import DeviceLifecycleService
-from gateway.app.services.device_service import DeviceService
+from gateway.app.services.device_service import DeviceService, DeviceValidationError
 from gateway.app.services.reset_reregister_workflow import ResetReregisterWorkflowService, WorkflowError
 from gateway.app.services.usb_factory_reset import UsbResetError
 
@@ -48,6 +50,10 @@ class StartRequest(BaseModel):
 class UsbSelection(BaseModel):
     port: str = Field(min_length=2, max_length=128)
     expected_hardware_id: str = Field(pattern=r"^0x[0-9A-F]{16}$")
+
+
+class UsbAssociation(StartRequest, UsbSelection):
+    pass
 
 
 class ConfirmReset(UsbSelection):
@@ -81,6 +87,46 @@ def start(body: StartRequest, request: Request, session: Session = Depends(get_s
     except WorkflowError as exc:
         fail(exc)
     return ResetReregisterWorkflowService.public(item)
+
+
+@router.post("/associate-usb")
+def associate_usb(body: UsbAssociation, request: Request, session: Session = Depends(get_session)) -> dict:
+    protect(request, usb=True)
+    repository = DeviceRepository(session)
+    device = repository.get(body.device_id)
+    if device is None or device.archived:
+        raise HTTPException(404, detail={"code": "device_not_found", "message": "Select an active sensor record."})
+    try:
+        state = request.app.state.usb_factory_reset.inspect(body.port)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(409, detail={"code": "usb_identity_unavailable", "message": str(exc)}) from exc
+    if (
+        state.get("identity_status") != "ok"
+        or state.get("node_id") != device.device_id
+        or state.get("hardware_id") != body.expected_hardware_id
+    ):
+        raise HTTPException(409, detail={
+            "code": "physical_identity_mismatch",
+            "message": "The USB sensor identity does not exactly match the selected gateway sensor.",
+        })
+    conflict = repository.get_other_by_hardware_id(body.expected_hardware_id, device.id)
+    if conflict is not None:
+        raise HTTPException(409, detail={
+            "code": "hardware_identity_conflict", "message": "Hardware identity belongs to another sensor record."
+        })
+    if device.hardware_id and device.hardware_id != body.expected_hardware_id:
+        raise HTTPException(409, detail={
+            "code": "hardware_identity_mismatch", "message": "The sensor record is associated with different hardware."
+        })
+    device.hardware_id = body.expected_hardware_id
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise HTTPException(409, detail={
+            "code": "hardware_identity_conflict", "message": "Hardware identity belongs to another sensor record."
+        }) from exc
+    return {"device_id": device.device_id, "hardware_id": device.hardware_id, "port": body.port, "status": "associated"}
 
 
 @router.get("/incomplete")
@@ -295,6 +341,30 @@ async def reconcile_reset(operation_id: str, body: OperationMatch, request: Requ
         if len(matches) != 1:
             raise WorkflowError("usb_recovery_ambiguous", "Connect exactly one USB sensor matching this operation.")
         state = matches[0]
+        reset_not_applied = (
+            state.get("node_id") == item.source_device_id
+            and state.get("identity_status") == "ok"
+            and state.get("provisioning_state") == "provisioned"
+        )
+        if reset_not_applied:
+            device = session.get(RegisteredDevice, item.source_record_id)
+            if device is None or device.archived or device.hardware_id != item.hardware_id:
+                raise WorkflowError("gateway_identity_changed", "Gateway identity changed during reset reconciliation.")
+            device.factory_reset_status = "not_requested"
+            item.reset_operation_id = None
+            result = json.loads(item.result_json)
+            result["reconciliation"] = {
+                "physical_reset_applied": False,
+                "node_id": state.get("node_id"),
+                "hardware_id": state.get("hardware_id"),
+                "configuration_status": state.get("configuration_status"),
+            }
+            item.result_json = json.dumps(result)
+            service.transition(
+                item, "configuration_backup_ready",
+                progress="Read-back verified that reset was not applied; explicit retry is safe",
+            )
+            return service.public(item)
         verified = (
             state.get("node_id") is None and state.get("identity_status") == "unprovisioned"
             and state.get("reset_marker_state") in {None, "complete", "absent"}
@@ -350,11 +420,34 @@ def registration(operation_id: str, body: RegistrationChoice, request: Request,
         item.target_display_name, item.target_location = body.display_name.strip(), body.location
         item.configuration_json = body.configuration.model_dump_json()
         session.add(DeviceLifecycleEvent(
-            operation_id=f"{item.operation_id}-choice", event_type="registration_choice", device_id=body.device_id,
+            operation_id=f"{item.operation_id}-choice-{uuid4().hex[:8]}", event_type="registration_choice",
+            device_id=body.device_id,
             display_name=body.display_name, hardware_id=item.hardware_id, ble_address=None,
             connectivity_state="unprovisioned", method="reset_reregister_workflow", factory_reset_requested=True,
             result="accepted", detail_json=json.dumps({"registration_choice": body.choice})))
         service.transition(item, "searching_for_reset_sensor_ble", progress="Registration choice validated")
+        return service.public(item)
+    except WorkflowError as exc:
+        fail(exc)
+
+
+@router.post("/{operation_id}/edit-registration")
+def edit_registration(operation_id: str, request: Request, session: Session = Depends(get_session)) -> dict:
+    protect(request)
+    service = ResetReregisterWorkflowService(session)
+    try:
+        item = service.get(operation_id)
+        if item.state not in {"searching_for_reset_sensor_ble", "ble_identity_matched"}:
+            raise WorkflowError(
+                "registration_edit_not_allowed", "Registration details can change only before provisioning starts."
+            )
+        item.registration_choice = None
+        item.target_device_id = None
+        item.target_display_name = None
+        item.target_location = None
+        item.target_ble_address = None
+        item.configuration_json = None
+        service.transition(item, "registration_details_required", progress="Registration details reopened for editing")
         return service.public(item)
     except WorkflowError as exc:
         fail(exc)
@@ -366,47 +459,48 @@ async def scan_ble(operation_id: str, request: Request, session: Session = Depen
     service = ResetReregisterWorkflowService(session)
     try:
         item = service.get(operation_id)
-        await request.app.state.scanner.start_scan()
-        await request.app.state.scanner.wait_for_scan()
-        expected = derive_onboarding_identity(item.hardware_id)
-        semaphore = asyncio.Semaphore(3)
+        async with request.app.state.ble_manager.paused_connections():
+            await request.app.state.scanner.start_scan()
+            await request.app.state.scanner.wait_for_scan()
+            expected = derive_onboarding_identity(item.hardware_id)
+            semaphore = asyncio.Semaphore(3)
 
-        async def classify(discovery) -> dict:
-            result = {"address": discovery.address, "name": discovery.name, "rssi": discovery.rssi,
-                      "verification_status": "identity_unavailable", "label": "Unable to verify identity",
-                      "reason": "Onboarding identity was not read.", "provisioning_allowed": False}
-            if not discovery.compatible:
-                result.update(verification_status="incompatible_protocol", label="Incompatible firmware",
-                              reason=discovery.compatibility_reason)
-                return result
-            try:
-                async with semaphore:
-                    identity = await asyncio.wait_for(
-                        request.app.state.node_provisioner.read_onboarding_identity(discovery.address),
-                        timeout=request.app.state.settings.provisioning_timeout_seconds,
-                    )
-                result.update(firmware_version=identity.get("firmware_version"),
-                              protocol_version=identity.get("protocol_version"),
-                              provisioning_state=identity.get("provisioning_state"))
-                if identity.get("protocol_version") not in request.app.state.compatibility.matrix["supported_protocol_versions"]:
+            async def classify(discovery) -> dict:
+                result = {"address": discovery.address, "name": discovery.name, "rssi": discovery.rssi,
+                          "verification_status": "identity_unavailable", "label": "Unable to verify identity",
+                          "reason": "Onboarding identity was not read.", "provisioning_allowed": False}
+                if not discovery.compatible:
                     result.update(verification_status="incompatible_protocol", label="Incompatible firmware",
-                                  reason="The onboarding identity protocol is not supported.")
-                elif identity.get("onboarding_identity") == expected:
-                    result.update(verification_status="verified_match", label="Verified physical sensor",
-                                  reason="BLE identity exactly matches the USB-verified sensor.",
-                                  provisioning_allowed=True)
-                else:
-                    result.update(verification_status="non_match", label="Different sensor",
-                                  reason="BLE identity does not match the USB-verified sensor.")
-            except TimeoutError:
-                result.update(verification_status="read_failure", reason="BLE identity read timed out.")
-            except OnboardingIdentityError as exc:
-                result.update(verification_status="identity_unavailable", reason=str(exc))
-            except (BleProvisioningError, ConnectionError) as exc:
-                result.update(verification_status="read_failure", reason=str(exc))
-            return result
+                                  reason=discovery.compatibility_reason)
+                    return result
+                try:
+                    async with semaphore:
+                        identity = await asyncio.wait_for(
+                            request.app.state.node_provisioner.read_onboarding_identity(discovery.address),
+                            timeout=request.app.state.settings.provisioning_timeout_seconds,
+                        )
+                    result.update(firmware_version=identity.get("firmware_version"),
+                                  protocol_version=identity.get("protocol_version"),
+                                  provisioning_state=identity.get("provisioning_state"))
+                    if identity.get("protocol_version") not in request.app.state.compatibility.matrix["supported_protocol_versions"]:
+                        result.update(verification_status="incompatible_protocol", label="Incompatible firmware",
+                                      reason="The onboarding identity protocol is not supported.")
+                    elif identity.get("onboarding_identity") == expected:
+                        result.update(verification_status="verified_match", label="Verified physical sensor",
+                                      reason="BLE identity exactly matches the USB-verified sensor.",
+                                      provisioning_allowed=True)
+                    else:
+                        result.update(verification_status="non_match", label="Different sensor",
+                                      reason="BLE identity does not match the USB-verified sensor.")
+                except TimeoutError:
+                    result.update(verification_status="read_failure", reason="BLE identity read timed out.")
+                except OnboardingIdentityError as exc:
+                    result.update(verification_status="identity_unavailable", reason=str(exc))
+                except (BleProvisioningError, ConnectionError) as exc:
+                    result.update(verification_status="read_failure", reason=str(exc))
+                return result
 
-        candidates = await asyncio.gather(*(classify(row) for row in request.app.state.scanner.discoveries()))
+            candidates = await asyncio.gather(*(classify(row) for row in request.app.state.scanner.discoveries()))
         matches = [row for row in candidates if row["verification_status"] == "verified_match"]
         if len(matches) > 1:
             for row in matches:
@@ -463,19 +557,26 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
         if not item.target_ble_address or not item.configuration_json:
             raise WorkflowError("ble_target_required", "Select a verified unprovisioned BLE candidate first.")
         service.transition(item, "provisioning_in_progress", progress="BLE provisioning started")
-        result = await request.app.state.node_provisioner.provision(
-            item.target_ble_address, item.target_device_id, item.operation_id[:16], json.loads(item.configuration_json),
-            expected_onboarding_identity=derive_onboarding_identity(item.hardware_id))
+        result_data = json.loads(item.result_json)
+        sensor_already_provisioned = bool(result_data.get("sensor_provisioned"))
+        if sensor_already_provisioned:
+            result = await request.app.state.node_provisioner.read_state(item.target_ble_address)
+        else:
+            result = await request.app.state.node_provisioner.provision(
+                item.target_ble_address, item.target_device_id, item.operation_id[:16],
+                json.loads(item.configuration_json),
+                expected_onboarding_identity=derive_onboarding_identity(item.hardware_id))
         if result["readback"].get("id") != item.target_device_id:
             raise WorkflowError("provisioning_readback_failed", "Provisioned identity did not pass read-back.")
-        result_data = json.loads(item.result_json)
         result_data["sensor_provisioned"] = True
         item.result_json = json.dumps(result_data)
-        session.add(DeviceLifecycleEvent(
-            operation_id=f"{item.operation_id}-provision", event_type="ble_provisioned", device_id=item.target_device_id,
-            display_name=item.target_display_name, hardware_id=item.hardware_id, ble_address=item.target_ble_address,
-            connectivity_state="connecting", method="reset_reregister_workflow", factory_reset_requested=True,
-            result="success", detail_json="{}"))
+        if not sensor_already_provisioned:
+            session.add(DeviceLifecycleEvent(
+                operation_id=f"{item.operation_id}-provision", event_type="ble_provisioned",
+                device_id=item.target_device_id, display_name=item.target_display_name,
+                hardware_id=item.hardware_id, ble_address=item.target_ble_address,
+                connectivity_state="connecting", method="reset_reregister_workflow", factory_reset_requested=True,
+                result="success", detail_json="{}"))
         service.transition(item, "gateway_registration_in_progress", progress="BLE provisioning read-back verified")
         source = session.get(RegisteredDevice, item.source_record_id)
         if item.registration_choice == "restore":
@@ -490,16 +591,27 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
             device = source
         else:
             discovery = request.app.state.scanner.get(item.target_ble_address)
+            if discovery is None:
+                discovery = Discovery(
+                    address=item.target_ble_address,
+                    name=None,
+                    compatible=True,
+                    compatibility_reason="Authoritative provisioning read-back verified",
+                    stable_device_id=item.target_device_id,
+                    last_seen_at=datetime.now(UTC),
+                )
             device = DeviceService(DeviceRepository(session), request.app.state.settings.device_id_pattern).register(
                 DeviceCreate(device_id=item.target_device_id, display_name=item.target_display_name,
                              discovery_address=item.target_ble_address, location=item.target_location),
                 discovery.model_copy(update={"stable_device_id": item.target_device_id}))
             device.hardware_id, device.factory_reset_status = item.hardware_id, "complete"
-        session.add(DeviceLifecycleEvent(
-            operation_id=f"{item.operation_id}-network", event_type="gateway_network_added", device_id=device.device_id,
-            display_name=device.display_name, hardware_id=item.hardware_id, ble_address=item.target_ble_address,
-            connectivity_state="connecting", method="reset_reregister_workflow", factory_reset_requested=True,
-            result="success", detail_json=json.dumps({"registration_choice": item.registration_choice})))
+        network_event_id = f"{item.operation_id}-network"
+        if session.scalar(select(DeviceLifecycleEvent).where(DeviceLifecycleEvent.operation_id == network_event_id)) is None:
+            session.add(DeviceLifecycleEvent(
+                operation_id=network_event_id, event_type="gateway_network_added", device_id=device.device_id,
+                display_name=device.display_name, hardware_id=item.hardware_id, ble_address=item.target_ble_address,
+                connectivity_state="connecting", method="reset_reregister_workflow", factory_reset_requested=True,
+                result="success", detail_json=json.dumps({"registration_choice": item.registration_choice})))
         session.commit()
         request.app.state.ble_manager.schedule(device.device_id, device.ble_address)
         result_data = json.loads(item.result_json)
@@ -507,7 +619,7 @@ async def provision(operation_id: str, request: Request, session: Session = Depe
         item.result_json = json.dumps(result_data)
         service.transition(item, "network_verification_in_progress", progress="Gateway registration is active")
         return service.public(item)
-    except (WorkflowError, BleProvisioningError, IntegrityError) as exc:
+    except (WorkflowError, BleProvisioningError, DeviceValidationError, DuplicateDeviceError, IntegrityError) as exc:
         session.rollback()
         try:
             item = service.get(operation_id)

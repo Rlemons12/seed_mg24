@@ -18,7 +18,7 @@ def test_release_manifest_and_checksum(tmp_path):
     release = module.create_release(artifact, tmp_path / "dist")
     manifest = json.loads((release / "firmware-manifest.json").read_text())
     assert manifest["artifact_sha256"] == module.sha256(release / "firmware.bin")
-    assert manifest["protocol_version"] == "1.0.0"
+    assert manifest["protocol_version"] == "1.1.0"
 
 
 def test_component_versions_are_semantic():

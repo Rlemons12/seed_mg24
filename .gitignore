@@ -22,6 +22,7 @@ env/
 build/
 dist/
 sensor_package/build_diagnostic*/
+sensor_package/build-vibration-diagnostic/
 sensor_package/build_review_*/
 sensor_package/BUILD_VALIDATION.json
 # Local one-off GATT/payload review reproductions retained outside version control.

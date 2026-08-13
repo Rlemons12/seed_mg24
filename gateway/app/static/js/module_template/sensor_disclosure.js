@@ -23,8 +23,20 @@
     const details = controlledId ? document.getElementById(controlledId) : null;
     if (!details) return;
     const expanded = button.getAttribute("aria-expanded") === "true";
+    if (!expanded) {
+      document.querySelectorAll('.mg-module-sensor-card__toggle[aria-expanded="true"]').forEach((other) => {
+        if (other === button) return;
+        other.setAttribute("aria-expanded", "false");
+        const otherDetails = document.getElementById(other.getAttribute("aria-controls"));
+        if (otherDetails) otherDetails.hidden = true;
+      });
+    }
     button.setAttribute("aria-expanded", String(!expanded));
     details.hidden = expanded;
+    button.dispatchEvent(new CustomEvent("mg24:sensor-disclosure", {
+      bubbles: true,
+      detail: { expanded: !expanded, nodeId: button.closest("[data-node-id]")?.dataset.nodeId || null },
+    }));
   }
 
   function bind(container) {

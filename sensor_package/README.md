@@ -22,3 +22,28 @@ Persistence uses the core's default NVM3 instance with explicit high user-domain
 Run `python sensor_package/scripts/package_release.py sensor_package/build/<artifact>` only after compilation. The package contains the artifact, checksum, manifest, and release notes; it does not claim reproducibility because core/library versions are not yet pinned exactly. OTA is not implemented. Verify identity, versions, capabilities, BLE service, telemetry, and restored configuration after every deliberate USB update.
 
 External sensor calibration, electrical design, and alarm limits remain disabled until authoritative hardware information is supplied. Built-in profile data is declarative under `profiles/built_in`; shared message schemas live only in `../shared_protocol`.
+
+## Production vibration processing
+
+The production BLE firmware now runs the validated onboard-IMU path on `Wire1`
+(`PB2` SDA1, `PB3` SCL1): LSM6DS3 FIFO, bounded 16-frame drains, explicit
+gyro-X/Y/Z plus accel-X/Y/Z parsing, two fixed 256-sample raw buffers, high-pass
+conditioning, time-domain metrics, and a 256-point Hann FFT. The service records
+configured and effective sample rates independently and uses the effective rate
+for FFT bin scaling.
+
+Vibration remains internal in protocol 1.0.0. Existing telemetry bytes and BLE
+characteristics are unchanged, and BLE retains its configured report cadence.
+The blocking 115200-baud serial JSON mirror is rate-limited to 1 Hz so it cannot
+starve FIFO acquisition; its record shape and fields are unchanged.
+`VIBRATION STATUS` over the existing serial
+command interface prints bounded health counters and timing without streaming
+samples or spectra. Vibration initialization/read failure is isolated from BLE,
+identity, provisioning, configuration, factory reset, heartbeat, and ordinary
+telemetry. A versioned shared-protocol design is required before exposing a
+compact vibration summary.
+
+The initial 2 Hz high-pass cutoff and 5 Hz dominant-frequency search minimum
+are experimental defaults, not industrial alarm thresholds. Velocity RMS,
+fault classification, ISO severity rules, and microphone/acoustic processing
+remain deferred.

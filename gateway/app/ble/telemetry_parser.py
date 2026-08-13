@@ -3,7 +3,7 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
-from gateway.app.schemas import ChannelValue, NormalizedTelemetry
+from gateway.app.schemas import ChannelValue, NormalizedTelemetry, VibrationSummary
 
 
 class TelemetryParseError(ValueError):
@@ -47,7 +47,49 @@ def parse_telemetry(
     kind = payload.get("t") or payload.get("type")
     if kind in {"tele", "telemetry"}:
         return _parse_legacy(payload, timestamp)
+    if kind == "v":
+        return _parse_vibration(payload, timestamp)
     return _parse_versioned(payload, timestamp)
+
+
+def _bounded_axis(payload: dict[str, Any], name: str, maximum: float) -> tuple[float, float, float]:
+    values = _array(payload.get(name), name, exact=3)
+    return tuple(float(_finite_number(value, f"{name}[{index}]", 0, maximum)) for index, value in enumerate(values))
+
+
+def _parse_vibration(payload: dict[str, Any], received_at: datetime) -> NormalizedTelemetry:
+    if set(payload) != {"t", "v", "s", "m", "a", "f", "q", "r", "p", "c", "k", "d", "x", "g"}:
+        raise TelemetryParseError("vibration summary has unexpected or missing fields")
+    if payload.get("v") != 1 or payload.get("a") != 1:
+        raise TelemetryParseError("unsupported vibration schema or algorithm version")
+    quality = payload.get("q")
+    if quality not in {0, 1}:
+        raise TelemetryParseError("vibration validity is invalid")
+    summary = VibrationSummary(
+        algorithm_version=1,
+        window_sequence=_uint32(payload["s"], "s"),
+        device_uptime_ms=_uint32(payload["m"], "m"),
+        effective_sample_rate_hz=float(_finite_number(payload["f"], "f", 1, 5000)) / 10.0,
+        validity="valid" if quality == 1 else "invalid",
+        accel_rms_g=tuple(value / 1000.0 for value in _bounded_axis(payload, "r", 16000)),
+        accel_peak_g=tuple(value / 1000.0 for value in _bounded_axis(payload, "p", 16000)),
+        crest_factor=tuple(value / 10.0 for value in _bounded_axis(payload, "c", 1000)),
+        kurtosis=tuple(value / 10.0 for value in _bounded_axis(payload, "k", 10000)),
+        dominant_frequency_hz=tuple(value / 10.0 for value in _bounded_axis(payload, "d", 2500)),
+        dominant_amplitude_g=tuple(value / 1000.0 for value in _bounded_axis(payload, "x", 16000)),
+        gyro_rms_dps=tuple(value / 10.0 for value in _bounded_axis(payload, "g", 20000)),
+    )
+    if summary.window_sequence == 0:
+        raise TelemetryParseError("vibration window sequence must be positive")
+    return NormalizedTelemetry(
+        schema_version=1,
+        record_type="vibration",
+        device_uptime_ms=summary.device_uptime_ms,
+        sequence_number=summary.window_sequence,
+        received_at=received_at,
+        vibration=summary,
+        original_payload=payload,
+    )
 
 
 def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedTelemetry:

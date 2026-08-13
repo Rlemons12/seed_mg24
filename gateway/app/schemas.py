@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -133,11 +133,27 @@ class ChannelValue(BaseModel):
     value_kind: Literal["raw", "filtered", "calibrated", "derived", "state", "health"] = "raw"
 
 
+class VibrationSummary(BaseModel):
+    schema_version: Literal[1] = 1
+    algorithm_version: Literal[1] = 1
+    window_sequence: int = Field(ge=1, le=0xFFFFFFFF)
+    device_uptime_ms: int = Field(ge=0, le=0xFFFFFFFF)
+    effective_sample_rate_hz: float = Field(gt=0, le=500)
+    validity: Literal["valid", "invalid"]
+    accel_rms_g: tuple[float, float, float]
+    accel_peak_g: tuple[float, float, float]
+    crest_factor: tuple[float, float, float]
+    kurtosis: tuple[float, float, float]
+    dominant_frequency_hz: tuple[float, float, float]
+    dominant_amplitude_g: tuple[float, float, float]
+    gyro_rms_dps: tuple[float, float, float]
+
+
 class NormalizedTelemetry(BaseModel):
     schema_version: int = Field(ge=1, le=255)
     device_id: str | None = Field(default=None, max_length=96)
     device_type: str = Field(default="xiao_mg24_sense", max_length=64)
-    record_type: Literal["measurement", "event", "heartbeat", "config_ack", "config_error", "burst_fragment"]
+    record_type: Literal["measurement", "event", "heartbeat", "config_ack", "config_error", "burst_fragment", "vibration"]
     device_uptime_ms: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
     sequence_number: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
     received_at: datetime
@@ -145,6 +161,7 @@ class NormalizedTelemetry(BaseModel):
     event: str | None = Field(default=None, max_length=96)
     channels: dict[str, ChannelValue] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    vibration: VibrationSummary | None = None
     original_payload: dict[str, Any]
 
 
@@ -152,7 +169,10 @@ class ReadingResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    reading_uuid: str
+    gateway_id: str
     received_at: datetime
+    measured_at: datetime | None
     measured_at_device_uptime: int | None
     device_uptime_ms: int | None
     sequence_number: int | None
@@ -164,13 +184,23 @@ class ReadingResponse(BaseModel):
     unit: str | None
     quality: str
     delayed: bool
+    installation_id: str | None
+    interface_id: str | None
+
+    @field_validator("received_at", "measured_at", mode="after")
+    @classmethod
+    def timestamps_are_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 class ReadingPage(BaseModel):
     items: list[ReadingResponse]
-    total: int
+    total: int | None
     offset: int
     limit: int
+    next_cursor: str | None = None
 
 
 class CommandRequest(BaseModel):

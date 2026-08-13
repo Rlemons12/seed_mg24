@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Any
 
-from gateway.app.ble.constants import CAPABILITIES_UUID, COMMAND_UUID, METADATA_UUID, TELEMETRY_UUID
+from gateway.app.ble.constants import CAPABILITIES_UUID, COMMAND_UUID, METADATA_UUID, TELEMETRY_UUID, VIBRATION_UUID
 from gateway.app.ble.telemetry_parser import TelemetryParseError
 
 logger = logging.getLogger(__name__)
@@ -158,6 +158,10 @@ class DeviceConnection:
                     self._notification_active = True
                 except Exception:
                     logger.info("Notifications unavailable for %s; using bounded polling", self.device_id)
+                try:
+                    await client.start_notify(VIBRATION_UUID, notify)
+                except Exception:
+                    logger.debug("Optional vibration summary unavailable for %s", self.device_id)
                 await self._set_state("connected")
                 while not self._stop.is_set() and not self._force_disconnect.is_set() and not disconnected.is_set():
                     await self._drain_commands(client)

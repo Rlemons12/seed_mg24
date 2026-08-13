@@ -101,6 +101,8 @@ def dashboard_page():
                 request.fulfill(path=STATIC / "onboarding_state.js", content_type="application/javascript")
             elif path.endswith("/static/reset_reregister.js"):
                 request.fulfill(path=STATIC / "reset_reregister.js", content_type="application/javascript")
+            elif path.endswith("/static/vibration_monitoring.js"):
+                request.fulfill(path=STATIC / "vibration_monitoring.js", content_type="application/javascript")
             elif path.endswith("/static/app.js"):
                 request.fulfill(path=STATIC / "app.js", content_type="application/javascript")
             elif path.endswith("/api/nodes"):
@@ -225,13 +227,14 @@ def test_connected_node_renders_live_sensor_inputs_in_disclosure(dashboard_page)
     assert toggle.get_attribute("aria-expanded") == "false"
     assert details.is_hidden()
     assert page.get_by_text("XIAO MG24 Sense 01", exact=True).is_visible()
-    assert page.get_by_text("MG24-0002", exact=True).is_hidden()
+    assert page.locator(".sensor-summary__identity .equipment-id").is_visible()
     assert page.get_by_role("button", name="Open Sensor").is_hidden()
     assert page.get_by_role("button", name="Configure", exact=True).is_hidden()
     card_width = page.locator(".mg-module-sensor-card").bounding_box()["width"]
     list_width = page.locator("#node-list").bounding_box()["width"]
-    assert card_width <= 352 and card_width < list_width
+    assert abs(card_width - list_width) <= 2
     toggle.click()
+    page.get_by_role("tab", name="Live Inputs").click()
     assert page.get_by_text("Acceleration X", exact=True).is_visible()
     assert page.get_by_text("0.896 g (gravity)", exact=True).is_visible()
     assert page.get_by_text("0.28 °/s (degrees per second)", exact=True).is_visible()
@@ -258,7 +261,7 @@ def test_sensor_disclosure_toggles_with_mouse_and_keyboard(dashboard_page):
     assert posts == []
 
 
-def test_multiple_sensor_disclosures_are_independent_and_unique(dashboard_page):
+def test_sensor_disclosures_use_single_expanded_row_and_unique_ids(dashboard_page):
     page, _posts = dashboard_page
     page.locator("#node-dialog").evaluate("dialog => dialog.close()")
     page.evaluate("""
@@ -274,14 +277,16 @@ def test_multiple_sensor_disclosures_are_independent_and_unique(dashboard_page):
     collapsed_boxes = cards.evaluate_all(
         "nodes => nodes.map(node => ({width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height}))"
     )
-    assert {box["height"] for box in collapsed_boxes} == {56}
+    assert all(60 <= box["height"] <= 90 for box in collapsed_boxes)
     assert len({round(box["width"]) for box in collapsed_boxes}) == 1
     toggles.nth(0).click()
     assert toggles.nth(0).get_attribute("aria-expanded") == "true"
     assert toggles.nth(1).get_attribute("aria-expanded") == "false"
     assert details.nth(0).is_visible() and details.nth(1).is_hidden()
-    assert cards.nth(0).bounding_box()["width"] > collapsed_boxes[0]["width"]
-    assert cards.nth(1).bounding_box()["height"] == 56
+    toggles.nth(1).click()
+    assert toggles.nth(0).get_attribute("aria-expanded") == "false"
+    assert toggles.nth(1).get_attribute("aria-expanded") == "true"
+    assert details.nth(0).is_hidden() and details.nth(1).is_visible()
 
 
 def test_collapsed_sensor_keeps_latest_telemetry_and_rerender_has_one_handler(dashboard_page):

@@ -16,7 +16,7 @@ New-Item -ItemType Directory -Force $Build | Out-Null
 Write-Host "Building sensor $SensorVersion, protocol $ProtocolVersion, node $NodeId"
 $previousErrorAction=$ErrorActionPreference
 $ErrorActionPreference='Continue'
-& arduino-cli compile --fqbn 'SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs' --build-path $Build --build-property "compiler.cpp.extra_flags=$Flags" $Sketch
+& arduino-cli compile --fqbn 'SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs' --libraries (Join-Path $Package 'firmware/libraries') --build-path $Build --build-property "compiler.cpp.extra_flags=$Flags" $Sketch
 $compileExitCode=$LASTEXITCODE
 $ErrorActionPreference=$previousErrorAction
 if($compileExitCode -ne 0){exit $compileExitCode}

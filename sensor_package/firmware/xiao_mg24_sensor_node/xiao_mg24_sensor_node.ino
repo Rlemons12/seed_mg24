@@ -12,6 +12,8 @@
 #include "nvm_backend.h"
 #include "usb_bootstrap.h"
 #include "silabs_additional.h"
+#include "vibration_service.h"
+#include <vibration_summary.h>
 #if defined(ARDUINO_SILABS_STACK_BLE_SILABS)
 #include "sl_bluetooth.h"
 #include "sha256_minimal.h"
@@ -36,6 +38,7 @@
 #define ENABLE_BATTERY 1
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
+ProductionVibrationService vibration_service(imu, Wire1);
 MicrophoneAnalog mic(MIC_DATA_PIN, MIC_PWR_PIN);
 
 uint32_t mic_buffer[MIC_SAMPLES];
@@ -46,6 +49,7 @@ uint32_t sample_interval_ms = 100;
 uint32_t last_sample_ms = 0;
 uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
+uint32_t last_serial_telemetry_ms = 0;
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
 uint32_t mic_level = 0;
@@ -55,10 +59,12 @@ bool mic_ok = false;
 bool ble_enabled = BLE_SUPPORTED;
 bool ble_connected = false;
 bool ble_notify_enabled = false;
+bool ble_vibration_notify_enabled = false;
 volatile bool ble_command_pending = false;
 volatile bool ble_system_booted = false;
 bool application_setup_complete = false;
 bool ble_database_initialized = false;
+bool vibration_initialized = false;
 char pending_ble_command[192] = {};
 #if BLE_SUPPORTED
 uint8_t ble_connection_handle = 0xff;
@@ -68,9 +74,12 @@ uint16_t ble_command_characteristic_handle = 0;
 uint16_t ble_metadata_characteristic_handle = 0;
 uint16_t ble_capabilities_characteristic_handle = 0;
 uint16_t ble_onboarding_identity_characteristic_handle = 0;
+uint16_t ble_vibration_characteristic_handle = 0;
 #endif
 char telemetry_json[512];
 char ble_json[244];
+char vibration_json[seed_mg24::kVibrationSummaryMaximumBytes];
+uint32_t last_vibration_summary_sequence = 0;
 char metadata_json[384];
 char capabilities_json[1280];
 char onboarding_identity_json[192];
@@ -133,12 +142,16 @@ static const uuid_128 capabilities_characteristic_uuid = {
 static const uuid_128 onboarding_identity_characteristic_uuid = {
   .data = { 0xef, 0xbe, 0x24, 0x00, 0x24, 0x47, 0x4d, 0x2d, 0x80, 0x24, 0x24, 0x47, 0x4d, 0x00, 0x00, 0x06 }
 };
+static const uuid_128 vibration_characteristic_uuid = {
+  .data = { 0xef, 0xbe, 0x24, 0x00, 0x24, 0x47, 0x4d, 0x2d, 0x80, 0x24, 0x24, 0x47, 0x4d, 0x00, 0x00, 0x07 }
+};
 
 void ble_initialize_gatt_db();
 void ble_start_advertising();
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
 void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
 bool ble_send_payload(const char* payload);
+void ble_publish_vibration();
 void ble_initialize_when_ready();
 void ble_refresh_onboarding_identity();
 #endif
@@ -404,6 +417,11 @@ void handle_command(String command) {
   if (handle_provision_command(command)) return;
   if (handle_configuration_transaction(command)) return;
 
+  if (command == "VIBRATION STATUS" || command == "VIBRATION_STATUS") {
+    vibration_service.printHealth(Serial);
+    return;
+  }
+
   if (command == "CFGGET 1 MICROPHONE_RAW") {
     report_runtime_configuration();
     return;
@@ -486,12 +504,17 @@ void print_telemetry() {
   float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
 
   if (imu_ok) {
-    ax = imu.readFloatAccelX();
-    ay = imu.readFloatAccelY();
-    az = imu.readFloatAccelZ();
-    gx = imu.readFloatGyroX();
-    gy = imu.readFloatGyroY();
-    gz = imu.readFloatGyroZ();
+    seed_mg24::ImuRawSample sample = {};
+    if (vibration_service.latestRawSample(&sample)) {
+      constexpr float accel_g_per_count = 16.0f / 32768.0f;
+      constexpr float gyro_dps_per_count = 2000.0f / 32768.0f;
+      ax = sample.accel_x * accel_g_per_count;
+      ay = sample.accel_y * accel_g_per_count;
+      az = sample.accel_z * accel_g_per_count;
+      gx = sample.gyro_x * gyro_dps_per_count;
+      gy = sample.gyro_y * gyro_dps_per_count;
+      gz = sample.gyro_z * gyro_dps_per_count;
+    }
   }
 
   int mic_pct = map(constrain(mic_level, MIC_VALUE_MIN, MIC_VALUE_MAX), MIC_VALUE_MIN, MIC_VALUE_MAX, 0, 100);
@@ -524,7 +547,15 @@ void print_telemetry() {
            mic_ok ? "true" : "false",
            ax, ay, az, gx, gy, gz, analog_json);
 
-  Serial.println(telemetry_json);
+  // The debugger UART is 115200 baud: mirroring this ~350-byte JSON at the
+  // 10 Hz BLE cadence consumes roughly one third of the CPU in blocking UART
+  // writes. Preserve the same serial record and fields at a bounded 1 Hz while
+  // BLE retains the configured report cadence.
+  const uint32_t telemetry_now = millis();
+  if (elapsed_since(telemetry_now, last_serial_telemetry_ms, 1000)) {
+    last_serial_telemetry_ms = telemetry_now;
+    Serial.println(telemetry_json);
+  }
 #if BLE_SUPPORTED
   ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, mic_pct, analog_json);
 #endif
@@ -580,11 +611,25 @@ void setup() {
 
   imu_ok = false;
   if (ENABLE_IMU) {
+    // Keep production aligned with the physically validated FIFO configuration.
+    imu.settings.accelRange = 16;
+    imu.settings.accelSampleRate = 416;
+    imu.settings.accelBandWidth = 100;
+    imu.settings.gyroRange = 2000;
+    imu.settings.gyroSampleRate = 416;
     imu_ok = (imu.begin() == 0);
+    // imu.begin() initializes the onboard Wire1 bus and restores its default
+    // clock, so apply the validated 400 kHz setting afterward.
+    // The onboard LSM6DS3 is on Wire1 (PB2/PB3), not the header Wire bus.
+    Wire1.setClock(400000);
   }
   Serial.print("{\"type\":\"boot\",\"step\":\"imu\",\"ok\":");
   Serial.print(imu_ok ? "true" : "false");
   Serial.println("}");
+
+  // FIFO acquisition starts after the one-time BLE GATT database build. That
+  // startup operation is intentionally allowed to complete without filling the
+  // FIFO; normal advertising is not delayed waiting for a vibration window.
 
   if (ENABLE_MIC) {
     mic.begin(mic_buffer, MIC_SAMPLES);
@@ -624,11 +669,14 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       ble_connection_handle = 0xff;
       ble_connected = false;
       ble_notify_enabled = false;
+      ble_vibration_notify_enabled = false;
       if (ble_database_initialized) ble_start_advertising();
       break;
     case sl_bt_evt_gatt_server_characteristic_status_id:
       if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_telemetry_characteristic_handle) {
         ble_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
+      } else if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_vibration_characteristic_handle) {
+        ble_vibration_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
       }
       break;
     case sl_bt_evt_gatt_server_attribute_value_id:
@@ -685,6 +733,13 @@ void ble_initialize_gatt_db() {
                                               0x00, 0x00, telemetry_characteristic_uuid,
                                               sl_bt_gattdb_variable_length_value, sizeof(ble_json),
                                               1, &empty_value, &ble_telemetry_characteristic_handle);
+  app_assert_status(sc);
+
+  sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
+                                              SL_BT_GATTDB_CHARACTERISTIC_READ | SL_BT_GATTDB_CHARACTERISTIC_NOTIFY,
+                                              0x00, 0x00, vibration_characteristic_uuid,
+                                              sl_bt_gattdb_variable_length_value, sizeof(vibration_json),
+                                              1, &empty_value, &ble_vibration_characteristic_handle);
   app_assert_status(sc);
 
   // Correlation-only bootstrap identity. It is read-only and is never included in advertising data.
@@ -859,12 +914,51 @@ bool ble_send_payload(const char* payload) {
   }
   return true;
 }
+
+void ble_publish_vibration() {
+  if (!ble_vibration_characteristic_handle) return;
+  const ProductionVibrationResult& latest = vibration_service.latest();
+  if (latest.validity != seed_mg24::VibrationResultValidity::VALID ||
+      latest.window_sequence == 0 ||
+      latest.window_sequence == last_vibration_summary_sequence) return;
+  if (!seed_mg24::encodeVibrationSummary(
+          latest.metrics, latest.window_sequence, latest.processed_uptime_ms,
+          vibration_json, sizeof(vibration_json))) {
+    processing_error_count++;
+    return;
+  }
+  const size_t length = strlen(vibration_json);
+  if (sl_bt_gatt_server_write_attribute_value(
+          ble_vibration_characteristic_handle, 0, length,
+          reinterpret_cast<const uint8_t*>(vibration_json)) != SL_STATUS_OK) {
+    processing_error_count++;
+    return;
+  }
+  last_vibration_summary_sequence = latest.window_sequence;
+  if (ble_connected && ble_vibration_notify_enabled &&
+      sl_bt_gatt_server_notify_all(
+          ble_vibration_characteristic_handle, length,
+          reinterpret_cast<const uint8_t*>(vibration_json)) != SL_STATUS_OK) {
+    processing_error_count++;
+  }
+}
 #endif
 
 void loop() {
 #if BLE_SUPPORTED
   ble_initialize_when_ready();
 #endif
+  if (!vibration_initialized && imu_ok
+#if BLE_SUPPORTED
+      && ble_database_initialized
+#endif
+  ) {
+    vibration_initialized = true;
+    const bool vibration_ok = vibration_service.begin();
+    Serial.print("{\"type\":\"boot\",\"step\":\"vibration\",\"ok\":");
+    Serial.print(vibration_ok ? "true" : "false");
+    Serial.println("}");
+  }
 #if BLE_SUPPORTED
   if (ble_command_pending) {
     char command[sizeof(pending_ble_command)];
@@ -909,6 +1003,12 @@ void loop() {
   }
 
   if (factory_reset_controller.busy()) bootstrap_only = true;
+  // Vibration failure is isolated: FIFO/DSP health never gates BLE, identity,
+  // provisioning, or the existing telemetry path.
+  if (!factory_reset_controller.busy()) vibration_service.service();
+#if BLE_SUPPORTED
+  ble_publish_vibration();
+#endif
   if (bootstrap_only) { delay(5); return; }
   update_microphone();
 

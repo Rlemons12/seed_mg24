@@ -54,3 +54,22 @@ def test_migration_tolerates_null_and_duplicate_hardware_ids_but_blocks_new_acti
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT COUNT(*) FROM registered_devices")) == 4
         assert connection.scalar(text("SELECT COUNT(*) FROM registered_devices WHERE archived=0 AND hardware_id IS NOT NULL")) == 1
+
+
+def test_vibration_relearn_schema_is_additive_to_existing_tables(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-vibration.db'}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE vibration_baselines (id INTEGER PRIMARY KEY, baseline_version INTEGER)"))
+        connection.execute(text("CREATE TABLE vibration_windows (id INTEGER PRIMARY KEY, window_sequence INTEGER)"))
+        connection.execute(text("INSERT INTO vibration_baselines (id,baseline_version) VALUES (1,1)"))
+        connection.execute(text("INSERT INTO vibration_windows (id,window_sequence) VALUES (1,42)"))
+    initialize_database(engine)
+    inspector = inspect(engine)
+    baseline_columns = {item["name"] for item in inspector.get_columns("vibration_baselines")}
+    window_columns = {item["name"] for item in inspector.get_columns("vibration_windows")}
+    assert {"reason", "last_relearn_request_id"} <= baseline_columns
+    assert "baseline_version" in window_columns
+    assert "vibration_baseline_history" in inspector.get_table_names()
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM vibration_baselines")) == 1
+        assert connection.scalar(text("SELECT COUNT(*) FROM vibration_windows")) == 1

@@ -30,6 +30,8 @@ flowchart LR
 
 The MG24 owns time-sensitive acquisition, filtering, configured calibration hooks, feature calculation, immediate state transitions, telemetry scheduling, sequence numbers, device uptime, and short bounded buffering. The Raspberry Pi owns registration, BLE lifecycle management, authoritative history, presentation, alarm acknowledgement in a future phase, and longer-term analysis.
 
+SQLite remains the authoritative edge store and PostgreSQL is not required on the Raspberry Pi. The schema now carries durable gateway and reading identities for a future, optional SQLite-to-central-PostgreSQL synchronization service; central availability will never be part of the local acquisition path. Configuration, retention, timestamp semantics, backup guidance, and current-rate storage estimates are documented in [gateway/README.md](gateway/README.md#sensor-data-storage).
+
 ## Equipment identity
 
 Every board has two deliberately separate names:

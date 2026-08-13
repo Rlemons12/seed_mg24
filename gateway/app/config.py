@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     max_payload_json_bytes: int = Field(4096, ge=256, le=65536)
     history_page_size_max: int = Field(500, ge=10, le=5000)
     history_max_days: int = Field(31, ge=1, le=366)
+    history_retention_days: int | None = Field(default=None, ge=1, le=36500)
+    history_retention_batch_size: int = Field(1000, ge=100, le=10000)
+    vibration_baseline_minimum_windows: int = Field(100, ge=20, le=10000)
+    vibration_condition_persistence_windows: int = Field(3, ge=1, le=100)
+    vibration_persistence_interval_seconds: float = Field(5.0, ge=0.5, le=3600)
+    gateway_id: str | None = None
     sensor_profile_directory: Path = Path("./data/sensor_profiles")
     max_profile_upload_bytes: int = Field(65536, ge=1024, le=1048576)
     provisioning_timeout_seconds: float = Field(10.0, ge=1.0, le=120.0)
@@ -42,6 +48,11 @@ class Settings(BaseSettings):
         if value not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ValueError("unsupported log level")
         return value
+
+    @field_validator("history_retention_days", "gateway_id", mode="before")
+    @classmethod
+    def blank_is_disabled(cls, value):
+        return None if value == "" else value
 
     def ensure_runtime_directories(self) -> None:
         if self.database_url.startswith("sqlite:///"):

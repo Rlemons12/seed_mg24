@@ -1,6 +1,7 @@
 "use strict";
 
 const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, firmwarePackages: [], selectedNode: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, resetTarget: null, resetConfirmation: null, draftId: null, commissioningActive: false };
+const sensorTabState = new Map();
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -56,12 +57,146 @@ async function refresh() {
   }));
   state.readings = Object.fromEntries(readings);
   renderNodes(); renderRemovedNodes(); renderInstallations();
+  refreshConditionSummaries(state.nodes)?.catch(() => {});
+}
+
+let liveRefreshPromise = null;
+let summaryRefreshPromise = null; let lastSummaryRefresh = 0;
+function updateSensorSummary(card, detail) {
+  const condition = detail.condition; const baseline = detail.baseline; const latest = detail.latest;
+  const stateName = condition?.state || "INSUFFICIENT_DATA";
+  const conditionElement = card.querySelector(".sensor-summary__condition");
+  if (conditionElement) { conditionElement.textContent = stateName.replaceAll("_", " "); conditionElement.className = `condition-state sensor-summary__condition condition-state--${stateName.toLowerCase().replaceAll("_", "-")}`; }
+  const score = card.querySelector(".sensor-summary__score"); if (score) score.textContent = condition?.baseline_similarity_score == null ? "Score —" : `Score ${Math.round(condition.baseline_similarity_score)}/100`;
+  const updated = card.querySelector(".sensor-summary__updated"); if (updated) updated.textContent = latest?.observed_at ? `Updated ${time(latest.observed_at)}` : `Baseline ${baseline?.sample_count || 0}`;
+}
+function refreshConditionSummaries(nodes) {
+  if (summaryRefreshPromise || Date.now() - lastSummaryRefresh < 5000) return summaryRefreshPromise;
+  lastSummaryRefresh = Date.now();
+  summaryRefreshPromise = Promise.all(nodes.map(async (node) => {
+    const encoded = encodeURIComponent(node.node_id);
+    const [condition, baseline, latest] = await Promise.all([
+      api(`/api/devices/${encoded}/condition`).catch(() => null), api(`/api/devices/${encoded}/vibration/baseline`).catch(() => null),
+      api(`/api/devices/${encoded}/vibration/latest`).catch(() => null),
+    ]);
+    const card = [...$("node-list").children].find((item) => item.dataset.nodeId === node.node_id);
+    if (card) updateSensorSummary(card, { condition, baseline, latest });
+  })).finally(() => { summaryRefreshPromise = null; });
+  return summaryRefreshPromise;
+}
+function refreshLive() {
+  if (liveRefreshPromise) return liveRefreshPromise;
+  liveRefreshPromise = (async () => {
+    const nodes = await api("/api/nodes");
+    const currentIds = state.nodes.map((node) => node.node_id).sort().join("|");
+    const nextIds = nodes.map((node) => node.node_id).sort().join("|");
+    if (currentIds !== nextIds) { await refresh(); return; }
+    const readings = await Promise.all(nodes.map(async (node) => {
+      try { return [node.node_id, await api(`/api/devices/${encodeURIComponent(node.node_id)}/readings/latest`)]; }
+      catch (_) { return [node.node_id, []]; }
+    }));
+    state.nodes = nodes; state.readings = Object.fromEntries(readings);
+    nodes.forEach((node) => {
+      const card = Array.from($("node-list").children).find((item) => item.dataset.nodeId === node.node_id);
+      if (!card) return;
+      const name = card.querySelector(".mg-module-sensor-card__name"); if (name) name.textContent = node.display_name;
+      const runtime = card.querySelector(".node-runtime-state");
+      if (runtime) { runtime.textContent = node.connection_status; runtime.className = `state node-runtime-state ${node.connection_status}`; }
+      card.querySelectorAll(".live-input-grid").forEach((inputGrid) => {
+        const rows = inputGrid.classList.contains("live-input-grid--compact")
+          ? (state.readings[node.node_id] || []).filter((row) => ["acceleration_x", "acceleration_y", "acceleration_z", "angular_velocity_x", "angular_velocity_y", "angular_velocity_z"].includes(row.channel))
+          : state.readings[node.node_id] || [];
+        renderLiveInputs(inputGrid, node, rows);
+      });
+      if (card.querySelector('.mg-module-sensor-card__toggle[aria-expanded="true"]')) {
+        const container = card.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
+        const range = card.querySelector(".vibration-controls select")?.value || "1h";
+        if (container) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch(() => {});
+      }
+    });
+    refreshConditionSummaries(nodes)?.catch(() => {});
+  })().finally(() => { liveRefreshPromise = null; });
+  return liveRefreshPromise;
 }
 
 function inputName(channel) { return channel.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
 function unitLabel(unit) { return ({g:"g (gravity)",dps:"°/s (degrees per second)",V:"V (volts)",adc_count:"ADC counts",percent:"% (percent)",pwm_count:"PWM counts",count:"count"})[unit] || unit || "unit not reported"; }
 function readingText(reading) { const value=reading.normalized_value ?? reading.raw_value; const shown=typeof value==="number" ? Number(value.toFixed(3)) : value; return `${shown ?? "Unavailable"} ${unitLabel(reading.unit)}`; }
 function inputOrder(channel) { const primary=["acceleration_x","acceleration_y","acceleration_z","angular_velocity_x","angular_velocity_y","angular_velocity_z"]; const index=primary.indexOf(channel); if(index>=0)return index; if(channel.startsWith("analog_"))return 100+Number(channel.slice(7)); return 20; }
+
+function renderLiveInputs(inputGrid, node, rows) {
+  const visible = rows.filter((row) => !["buffer_utilization", "dropped_record_count", "processing_error_count", "sensor_error_count", "led_brightness"].includes(row.channel))
+    .sort((left, right) => inputOrder(left.channel) - inputOrder(right.channel) || left.channel.localeCompare(right.channel))
+  const existing = new Map([...inputGrid.querySelectorAll(":scope > .channel")].map((item) => [item.dataset.channel, item]));
+  visible.forEach((row, index) => {
+      let input = existing.get(row.channel);
+      if (!input) {
+        input = el("div", undefined, "channel");
+        input.append(el("strong"), el("div"), el("span"));
+      }
+      input.dataset.channel = row.channel;
+      input.children[0].textContent = inputName(row.channel);
+      input.children[1].textContent = readingText(row);
+      input.children[2].textContent = `Quality: ${row.quality}; updated ${time(row.received_at)}`;
+      const atIndex = inputGrid.children[index];
+      if (atIndex !== input) inputGrid.insertBefore(input, atIndex || null);
+      existing.delete(row.channel);
+    });
+  existing.forEach((input) => input.remove());
+  const empty = inputGrid.querySelector(":scope > .live-input-empty");
+  if (!visible.length) {
+    const message = node.connection_status === "connected" ? "Waiting for the first sensor reading…" : "Connect this sensor to load live readings.";
+    if (empty) empty.textContent = message; else inputGrid.append(el("p", message, "muted live-input-empty"));
+  } else empty?.remove();
+}
+
+function appendVibrationPanel(details, node, expanded, viewMode) {
+  const header = el("div", undefined, "vibration-panel-header");
+  const title = el("div");
+  title.append(el("h4", "Vibration condition monitoring"),
+    el("p", "Relative condition monitoring — not calibrated severity", "muted"));
+  const controls = el("div", undefined, "vibration-controls");
+  const rangeLabel = el("label", "Time range");
+  const range = el("select"); range.setAttribute("aria-label", "Vibration chart time range");
+  [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"]]
+    .forEach(([value, label]) => { const option = el("option", label); option.value = value; if(value === "1h") option.selected = true; range.append(option); });
+  const refreshButton = el("button", "Refresh"); refreshButton.type = "button";
+  rangeLabel.append(range); controls.append(rangeLabel, refreshButton); header.append(title, controls);
+  if (viewMode === "vibration") details.append(header);
+  const container = el("div", undefined, "vibration-monitoring"); container.dataset.deviceId = node.node_id; container.dataset.viewMode = viewMode;
+  container.append(el("p", "Expand this sensor to load vibration condition data.", "muted")); details.append(container);
+  const load = (force = false) => MG24VibrationMonitoring.load(container, node.node_id, node, api, range.value, force);
+  range.addEventListener("change", () => load(true)); refreshButton.addEventListener("click", () => load(true));
+  if (expanded) load().catch((error) => { container.replaceChildren(el("p", error.message, "warning")); });
+  return { container, load };
+}
+
+function sensorTab(nodeId, name, label, active) {
+  const button = el("button", label, "sensor-tab"); button.type = "button"; button.dataset.sensorTab = name;
+  button.id = `${MG24SensorDisclosure.detailsId(nodeId)}-tab-${name}`; button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", String(active)); button.setAttribute("tabindex", active ? "0" : "-1");
+  button.setAttribute("aria-controls", `${MG24SensorDisclosure.detailsId(nodeId)}-panel-${name}`); return button;
+}
+
+function sensorPanel(nodeId, name, active) {
+  const panel = el("section", undefined, "sensor-tab-panel"); panel.dataset.sensorPanel = name;
+  panel.id = `${MG24SensorDisclosure.detailsId(nodeId)}-panel-${name}`; panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", `${MG24SensorDisclosure.detailsId(nodeId)}-tab-${name}`); panel.hidden = !active; return panel;
+}
+
+function activateSensorTab(card, name, focus = false) {
+  const available = [...card.querySelectorAll("[data-sensor-tab]")];
+  if (!available.some((button) => button.dataset.sensorTab === name)) name = "overview";
+  sensorTabState.set(card.dataset.nodeId, name);
+  available.forEach((button) => {
+    const active = button.dataset.sensorTab === name;
+    button.setAttribute("aria-selected", String(active)); button.tabIndex = active ? 0 : -1;
+    if (active && focus) button.focus();
+  });
+  card.querySelectorAll("[data-sensor-panel]").forEach((panel) => { panel.hidden = panel.dataset.sensorPanel !== name; });
+  const panel = card.querySelector(`[data-sensor-panel="${name}"]`);
+  const loader = panel?._vibrationLoad; if (loader) loader().catch(() => {});
+}
 
 function renderNodes() {
   const list = $("node-list");
@@ -79,33 +214,51 @@ function renderNodes() {
     toggle.setAttribute("aria-controls", detailsId);
     const chevron = el("span", "", "mg-module-sensor-card__chevron");
     chevron.setAttribute("aria-hidden", "true");
-    toggle.append(el("span", node.display_name, "mg-module-sensor-card__name"), chevron);
+    const identity = el("span", undefined, "sensor-summary__identity");
+    identity.append(el("span", node.display_name, "mg-module-sensor-card__name"), el("small", node.node_id, "equipment-id"));
+    const summary = el("span", undefined, "sensor-summary__status");
+    summary.append(el("span", "Loading condition", "condition-state sensor-summary__condition"),
+      el("span", node.connection_status, `state node-runtime-state ${node.connection_status}`),
+      el("span", "Score —", "sensor-summary__score"), el("span", "Updated —", "sensor-summary__updated"));
+    toggle.append(identity, summary, chevron);
     heading.append(toggle);
 
     const details = el("div", undefined, "mg-module-sensor-card__details");
     details.id = detailsId;
     details.hidden = !expanded;
-    details.append(el("div", node.node_id, "equipment-id"), el("p", node.connection_status, `state ${node.connection_status}`));
-    const dl = el("dl");
+    const activeTab = sensorTabState.get(node.node_id) || "overview";
+    const tabs = el("div", undefined, "sensor-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", `${node.display_name} details`);
+    [["overview", "Overview"], ["inputs", "Live Inputs"], ["vibration", "Vibration"], ["baseline", "Baseline"], ["device", "Device Info"]]
+      .forEach(([name, label]) => tabs.append(sensorTab(node.node_id, name, label, activeTab === name)));
+    details.append(tabs);
+
+    const overview = sensorPanel(node.node_id, "overview", activeTab === "overview");
+    const overviewVibration = appendVibrationPanel(overview, node, expanded && activeTab === "overview", "overview");
+    overview._vibrationLoad = overviewVibration.load;
+    overview.append(el("h4", "Current sensor readings"));
+    const compactInputs = el("div", undefined, "channel-grid live-input-grid live-input-grid--compact");
+    renderLiveInputs(compactInputs, node, (state.readings[node.node_id] || []).filter((row) =>
+      ["acceleration_x", "acceleration_y", "acceleration_z", "angular_velocity_x", "angular_velocity_y", "angular_velocity_z"].includes(row.channel)));
+    overview.append(compactInputs);
+
+    const inputs = sensorPanel(node.node_id, "inputs", activeTab === "inputs"); inputs.append(el("h4", "Live sensor inputs"));
+    const inputGrid = el("div", undefined, "channel-grid live-input-grid");
+    renderLiveInputs(inputGrid, node, state.readings[node.node_id] || []); inputs.append(inputGrid);
+
+    const vibration = sensorPanel(node.node_id, "vibration", activeTab === "vibration");
+    const vibrationView = appendVibrationPanel(vibration, node, expanded && activeTab === "vibration", "vibration"); vibration._vibrationLoad = vibrationView.load;
+
+    const baseline = sensorPanel(node.node_id, "baseline", activeTab === "baseline");
+    const baselineView = appendVibrationPanel(baseline, node, expanded && activeTab === "baseline", "baseline"); baseline._vibrationLoad = baselineView.load;
+
+    const device = sensorPanel(node.node_id, "device", activeTab === "device");
+    const dl = el("dl", undefined, "device-info-grid");
     [["BLE name", node.ble_advertised_name || "Unknown"], ["BLE address", node.ble_address || "Unknown"],
       ["Firmware", node.firmware_version || "Unknown"], ["Sensor package", node.sensor_package_version || "Not reported"],
       ["Protocol", node.protocol_version || "Not reported"], ["Compatibility", node.compatibility_status || "unknown"]]
       .forEach(([label, value]) => dl.append(el("dt", label), el("dd", value)));
-    details.append(dl);
-    if (node.compatibility_message) details.append(el("p", node.compatibility_message, node.compatibility_status === "compatible" ? "muted" : "warning"));
-    details.append(el("h4", "Live sensor inputs"));
-    const inputGrid = el("div", undefined, "channel-grid live-input-grid");
-    const rows = state.readings[node.node_id] || [];
-    rows.filter((row) => !["buffer_utilization", "dropped_record_count", "processing_error_count", "sensor_error_count", "led_brightness"].includes(row.channel))
-      .sort((left, right) => inputOrder(left.channel) - inputOrder(right.channel) || left.channel.localeCompare(right.channel))
-      .forEach((row) => {
-        const input = el("div", undefined, "channel");
-        input.dataset.channel = row.channel;
-        input.append(el("strong", inputName(row.channel)), el("div", readingText(row)), el("span", `Quality: ${row.quality}; updated ${time(row.received_at)}`));
-        inputGrid.append(input);
-      });
-    if (!inputGrid.children.length) inputGrid.append(el("p", node.connection_status === "connected" ? "Waiting for the first sensor reading…" : "Connect this sensor to load live readings.", "muted"));
-    details.append(inputGrid);
+    device.append(dl);
+    if (node.compatibility_message) device.append(el("p", node.compatibility_message, node.compatibility_status === "compatible" ? "muted" : "warning"));
     const actions = el("div", undefined, "actions");
     const reconnect = el("button", "Open Sensor");
     reconnect.type = "button";
@@ -123,7 +276,8 @@ function renderNodes() {
     resetReregister.type = "button";
     resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
     actions.append(reconnect, configure, remove, factoryReset, resetReregister);
-    details.append(actions);
+    device.append(actions);
+    details.append(overview, inputs, vibration, baseline, device);
     card.append(heading, details);
     list.append(card);
   });
@@ -311,7 +465,33 @@ document.querySelector('[data-action="retry-installation"]').addEventListener("c
 document.querySelector('[data-action="disable-installation"]').addEventListener("click",async()=>{try{await api(`/api/sensor-installations/${encodeURIComponent(state.selectedInstallation)}/disable`,{method:"POST"});await refresh();await openDetail(state.selectedInstallation);}catch(error){notice(error.message);}});
 
 let refreshTimer=null;
-function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refresh().catch(()=>{});},500); }
+function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refreshLive().catch(()=>{});},1000); }
+$("node-list").addEventListener("mg24:sensor-disclosure", (event) => {
+  if (!event.detail?.expanded || !event.detail.nodeId) return;
+  const card = event.target.closest("[data-node-id]");
+  const container = card?.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
+  const range = card?.querySelector(".vibration-controls select")?.value || "1h";
+  const node = state.nodes.find((item) => item.node_id === event.detail.nodeId);
+  if (container && node) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch((error) => {
+    container.replaceChildren(el("p", error.message, "warning"));
+  });
+});
+$("node-list").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-sensor-tab]");
+  if (!tab) return;
+  const card = tab.closest("[data-node-id]"); if (card) activateSensorTab(card, tab.dataset.sensorTab);
+});
+$("node-list").addEventListener("keydown", (event) => {
+  const tab = event.target.closest("[data-sensor-tab]"); if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  const tabs = [...tab.closest('[role="tablist"]').querySelectorAll("[data-sensor-tab]")]; let index = tabs.indexOf(tab);
+  if (event.key === "Home") index = 0; else if (event.key === "End") index = tabs.length - 1;
+  else index = (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault(); activateSensorTab(tab.closest("[data-node-id]"), tabs[index].dataset.sensorTab, true);
+});
+$("node-list").addEventListener("mg24:vibration-summary", (event) => {
+  const card = event.target.closest("[data-node-id]"); if (!card || event.detail.nodeId !== card.dataset.nodeId) return;
+  updateSensorSummary(card, event.detail);
+});
 function websocket() { const protocol=location.protocol==="https:"?"wss":"ws"; const socket=new WebSocket(`${protocol}://${location.host}/ws/telemetry`); socket.addEventListener("open",()=>{$("gateway-status").textContent="Live";socket.send("ready");}); socket.addEventListener("message",scheduleRefresh); socket.addEventListener("close",()=>{$("gateway-status").textContent="Reconnecting...";setTimeout(websocket,2000);}); }
 window.MG24Dashboard = { api, refresh, notice, time };
 window.MG24ResetReregister.init();

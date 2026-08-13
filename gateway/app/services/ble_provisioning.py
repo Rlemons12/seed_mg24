@@ -188,7 +188,7 @@ class BleNodeProvisioner:
                     raise BleProvisioningError("BLE candidate no longer matches the USB-verified physical sensor")
             metadata = json.loads(bytes(await client.read_gatt_char(METADATA_UUID)).decode("utf-8"))
             capabilities = json.loads(bytes(await client.read_gatt_char(CAPABILITIES_UUID)).decode("utf-8"))
-            if metadata.get("protocol_version") != "1.0.0":
+            if metadata.get("protocol_version") not in {"1.0.0", "1.1.0"}:
                 raise BleProvisioningError("node protocol version is unsupported")
             if not capabilities.get("configuration", {}).get("readback"):
                 raise BleProvisioningError("node does not support persistent configuration readback")

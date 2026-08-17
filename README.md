@@ -8,6 +8,8 @@ Identity and operational configuration use separate redundant NVM3 records. Ordi
 
 Gateway removal, explicit restoration, and physical factory reset are distinct workflows. Removal preserves telemetry and device firmware/configuration; factory reset is USB-only and preserves telemetry, firmware, hardware identity, and platform storage. See [`docs/sensor-lifecycle.md`](docs/sensor-lifecycle.md).
 
+Durable telemetry identity, persistence acknowledgements, replay buffering, and independent sampling/reporting semantics are documented in [`docs/data-management-protocol.md`](docs/data-management-protocol.md).
+
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 
 ## Architecture

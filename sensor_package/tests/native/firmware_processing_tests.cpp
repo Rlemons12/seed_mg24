@@ -34,8 +34,12 @@ int main() {
   assert(channel.processing_due(20)); ProcessedValue first=channel.process(20);
   assert(first.quality == MeasurementQuality::Uncalibrated && !first.engineering_value_available);
   assert(first.minimum == 100 && first.maximum == 100 && channel.report_due(30) && channel.heartbeat_due(40));
+  assert(channel.samples_since_report() == 1);
   channel.accept_raw(110, true, 40); ProcessedValue second=channel.process(40);
   assert(second.maximum == 110 && second.rate_of_change > 0);
+  assert(channel.samples_since_report() == 2);
+  channel.mark_reported(40); assert(channel.samples_since_report() == 0);
+  assert(channel.sample_due(50) && !channel.report_due(69) && channel.report_due(70));
 
   c.warning_high={true,10}; c.activation_persistence_ms=100; c.clearing_persistence_ms=50; c.hysteresis=1;
   AlarmEngine alarm; alarm.configure(&c);
@@ -49,8 +53,15 @@ int main() {
   for (int i=0;i<TELEMETRY_BUFFER_CAPACITY;i++) { routine.sequence_number=i; assert(buffer.push(routine)); }
   TelemetryRecord alarm_record=routine; alarm_record.priority=RecordPriority::Alarm; alarm_record.sequence_number=99;
   assert(buffer.push(alarm_record)); assert(buffer.dropped_count()==1);
+  TelemetryRecord peeked; assert(buffer.peek_oldest(&peeked)); assert(buffer.size()==TELEMETRY_BUFFER_CAPACITY);
+  assert(buffer.oldest_sequence()==peeked.sequence_number && buffer.newest_sequence()==99);
+  assert(buffer.acknowledge_through(5)>0 && buffer.size()<TELEMETRY_BUFFER_CAPACITY);
   bool found=false; TelemetryRecord out; while(buffer.pop(&out)) if(out.sequence_number==99) found=true;
   assert(found && out.delayed);
+  TelemetryBuffer bounded;
+  for (int i=0;i<TELEMETRY_BUFFER_CAPACITY+1;i++) { routine.sequence_number=i; assert(bounded.push(routine)); }
+  assert(bounded.size()==TELEMETRY_BUFFER_CAPACITY && bounded.oldest_sequence()==1 &&
+         bounded.newest_sequence()==TELEMETRY_BUFFER_CAPACITY && bounded.dropped_count()==1);
 
   char encoded[244]; alarm_record.type=RecordType::Measurement; strcpy(alarm_record.channel_id,"sensor_1");
   alarm_record.quality=MeasurementQuality::Uncalibrated; alarm_record.raw_value=1834; alarm_record.uptime_ms=20;

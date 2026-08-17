@@ -16,6 +16,18 @@ def test_existing_readings_table_migrates_without_data_loss(tmp_path):
         assert connection.scalar(text("SELECT COUNT(*) FROM readings")) == 1
 
 
+def test_data_management_schema_is_additive_and_idempotent(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'data-management.db'}")
+    initialize_database(engine)
+    initialize_database(engine)
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("readings")}
+    assert {"sensor_boot_id", "sample_count"} <= columns
+    assert "telemetry_sync_states" in inspector.get_table_names()
+    indexes = {item["name"] for item in inspector.get_indexes("readings")}
+    assert "ix_readings_device_boot_sequence" in indexes
+
+
 def test_registered_device_lifecycle_columns_and_event_table_are_additive(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'legacy-devices.db'}")
     with engine.begin() as connection:

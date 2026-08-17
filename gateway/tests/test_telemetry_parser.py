@@ -75,3 +75,20 @@ def test_heartbeat_channels_are_distinguished():
     result = parse_telemetry('{"t":"h","v":1,"s":2,"ms":10,"bv":4.1,"bu":3,"dr":1,"pe":0,"se":0}')
     assert result.channels["battery_voltage"].value_kind == "calibrated"
     assert result.channels["buffer_utilization"].value_kind == "health"
+
+
+def test_parses_ack_capable_v2_identity_and_sample_count():
+    result = parse_telemetry(
+        '{"t":"tele","v":2,"id":"MG24-1","bid":"0123456789abcdef","s":9,"ms":1000,"sc":5,"m":800}'
+    )
+    assert result.sensor_boot_id == "0123456789abcdef"
+    assert result.sequence_number == 9 and result.sample_count == 5
+
+
+@pytest.mark.parametrize("payload", [
+    '{"t":"m","v":2,"id":"MG24-1","s":1,"c":"x","rv":1}',
+    '{"t":"m","v":2,"id":"MG24-1","bid":"ABCDEF0123456789","s":1,"c":"x","rv":1}',
+])
+def test_v2_requires_valid_boot_identity(payload):
+    with pytest.raises(TelemetryParseError):
+        parse_telemetry(payload)

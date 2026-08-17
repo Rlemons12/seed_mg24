@@ -53,6 +53,29 @@ async def test_stop_clears_pending_commands_safely():
         await future
 
 
+@pytest.mark.asyncio
+async def test_persistence_ack_is_capability_gated_and_bounded():
+    async def callback(*_args):
+        pass
+
+    connection = DeviceConnection(
+        "MG24-0001", "AA", telemetry_callback=callback, status_callback=callback,
+        connection_semaphore=asyncio.Semaphore(1),
+    )
+    connection.state = "connected"
+    await connection.send_persistence_ack("0123456789abcdef", 7)
+    assert connection._commands.empty()
+    connection.capabilities = {"data_management": {
+        "telemetry_version": 2, "boot_id": True, "persistence_ack": True, "backlog_ack": True,
+    }}
+    task = asyncio.create_task(connection.send_persistence_ack("0123456789abcdef", 7))
+    await asyncio.sleep(0)
+    command, future = connection._commands.get_nowait()
+    assert command == "TACK 2 0123456789abcdef 7"
+    future.set_result(None)
+    await task
+
+
 class FailingClient:
     def __init__(self, *_args, **_kwargs):
         pass

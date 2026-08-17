@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,17 @@ def _finite_number(value: Any, field: str, minimum: float | None = None, maximum
 
 def _uint32(value: Any, field: str) -> int:
     return int(_finite_number(value, field, 0, 0xFFFFFFFF))
+
+
+def _boot_id(payload: dict[str, Any], schema: int) -> str | None:
+    value = payload.get("bid")
+    if schema < 2:
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{16}", value) is None:
+        raise TelemetryParseError("bid must be a 16-character lowercase hexadecimal boot identifier")
+    if "s" not in payload:
+        raise TelemetryParseError("schema version 2 requires a sequence number")
+    return value
 
 
 def _array(value: Any, field: str, exact: int | None = None, maximum: int = 16) -> list[float | int]:
@@ -139,12 +151,17 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
     device_id = work.get("id")
     if device_id is not None and (not isinstance(device_id, str) or len(device_id) > 96):
         raise TelemetryParseError("id is invalid")
+    sample_count = _uint32(work["sc"], "sc") if "sc" in work else None
+    if sample_count == 0:
+        raise TelemetryParseError("sample count must be positive")
     return NormalizedTelemetry(
         schema_version=schema,
         device_id=device_id,
         record_type="measurement",
         device_uptime_ms=uptime,
         sequence_number=sequence,
+        sensor_boot_id=_boot_id(work, schema),
+        sample_count=sample_count,
         received_at=received_at,
         channels=channels,
         original_payload=payload,
@@ -164,7 +181,7 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
     if kind not in record_types:
         raise TelemetryParseError("unsupported message type")
     version = int(_finite_number(payload.get("v"), "v", 1, 255))
-    if version != 1:
+    if version not in {1, 2}:
         raise TelemetryParseError("unsupported schema version")
     device_id = payload.get("id")
     if device_id is not None and (not isinstance(device_id, str) or not device_id or len(device_id) > 96):
@@ -210,6 +227,7 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
         record_type=record_types[kind],
         device_uptime_ms=uptime,
         sequence_number=sequence,
+        sensor_boot_id=_boot_id(payload, version),
         received_at=received_at,
         delayed=bool(payload.get("d", False)),
         event=event,

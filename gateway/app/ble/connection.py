@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Any
@@ -95,6 +96,22 @@ class DeviceConnection:
         future = asyncio.get_running_loop().create_future()
         self._commands.put_nowait((command, future))
         await asyncio.wait_for(future, timeout=timeout)
+
+    def supports_persistence_ack(self) -> bool:
+        data_management = self.capabilities.get("data_management", {})
+        return (
+            data_management.get("telemetry_version") == 2
+            and data_management.get("boot_id") is True
+            and data_management.get("persistence_ack") is True
+            and data_management.get("backlog_ack") is True
+        )
+
+    async def send_persistence_ack(self, boot_id: str, sequence: int) -> None:
+        if not self.supports_persistence_ack():
+            return
+        if re.fullmatch(r"[0-9a-f]{16}", boot_id) is None or not 0 <= sequence <= 0xFFFFFFFF:
+            raise ValueError("invalid persistence acknowledgement")
+        await self.send_command(f"TACK 2 {boot_id} {sequence}")
 
     async def run(self) -> None:
         failure_count = 0

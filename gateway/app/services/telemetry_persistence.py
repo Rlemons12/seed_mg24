@@ -1,12 +1,13 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from gateway.app.models import Reading, RegisteredDevice, SensorInstallation, utc_now
+from gateway.app.models import Reading, RegisteredDevice, SensorInstallation, TelemetrySyncState, utc_now
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.schemas import NormalizedTelemetry
 from gateway.app.services.node_capability_service import NodeCapabilityService
@@ -16,6 +17,17 @@ logger = logging.getLogger(__name__)
 
 class TelemetryPersistenceError(RuntimeError):
     pass
+
+
+class TelemetryIdentityConflict(TelemetryPersistenceError):
+    pass
+
+
+@dataclass(frozen=True)
+class PersistenceOutcome:
+    rows: list[Reading]
+    acknowledged_sequence: int | None = None
+    duplicate: bool = False
 
 
 class TelemetryPersistenceService:
@@ -33,7 +45,7 @@ class TelemetryPersistenceService:
         session_id: str,
         measured_at: datetime | None,
         encoded_original: str,
-    ) -> list[Reading]:
+    ) -> PersistenceOutcome:
         with self.session_factory() as session:
             try:
                 device = session.scalar(select(RegisteredDevice).where(RegisteredDevice.device_id == node_id))
@@ -41,6 +53,28 @@ class TelemetryPersistenceService:
                     raise ValueError("registered device no longer exists")
                 if device.archived or not device.enabled or device.lifecycle_state == "removed":
                     raise ValueError("registered device is removed or disabled")
+
+                if payload.sensor_boot_id is not None and payload.sequence_number is not None:
+                    existing = list(session.scalars(select(Reading).where(
+                        Reading.registered_device_id == device.id,
+                        Reading.sensor_boot_id == payload.sensor_boot_id,
+                        Reading.sequence_number == payload.sequence_number,
+                    )))
+                    if existing:
+                        expected_channels = set(payload.channels or {payload.event or payload.record_type: None})
+                        if {row.channel for row in existing} != expected_channels or any(
+                            row.payload_json != encoded_original for row in existing
+                        ):
+                            state = self._sync_state(session, device.id, payload.sensor_boot_id, payload.sequence_number)
+                            state.conflict_count += 1
+                            state.updated_at = utc_now()
+                            session.commit()
+                            raise TelemetryIdentityConflict("telemetry identity was reused with different content")
+                        state = self._sync_state(session, device.id, payload.sensor_boot_id, payload.sequence_number)
+                        state.duplicate_count += 1
+                        state.updated_at = utc_now()
+                        session.commit()
+                        return PersistenceOutcome([], state.highest_contiguous_sequence, duplicate=True)
 
                 capabilities = NodeCapabilityService(DeviceRepository(session)).get(node_id)
                 channel_interfaces = {
@@ -74,6 +108,8 @@ class TelemetryPersistenceService:
                             measured_at_device_uptime=payload.device_uptime_ms,
                             device_uptime_ms=payload.device_uptime_ms,
                             sequence_number=payload.sequence_number,
+                            sensor_boot_id=payload.sensor_boot_id,
+                            sample_count=payload.sample_count,
                             session_id=session_id,
                             record_type=payload.record_type,
                             channel=name,
@@ -99,8 +135,13 @@ class TelemetryPersistenceService:
                 device.connection_status = "connected"
                 device.last_seen_at = payload.received_at
                 device.updated_at = utc_now()
+                acknowledged_sequence = None
+                if payload.sensor_boot_id is not None and payload.sequence_number is not None:
+                    session.flush()
+                    state = self._update_sync_state(session, device.id, payload.sensor_boot_id, payload.sequence_number)
+                    acknowledged_sequence = state.highest_contiguous_sequence
                 session.commit()
-                return rows
+                return PersistenceOutcome(rows, acknowledged_sequence)
             except ValueError:
                 session.rollback()
                 raise
@@ -113,3 +154,41 @@ class TelemetryPersistenceService:
                     sorted(payload.channels),
                 )
                 raise TelemetryPersistenceError(str(exc)) from exc
+
+    @staticmethod
+    def _sync_state(session: Session, device_id: int, boot_id: str, sequence: int) -> TelemetrySyncState:
+        state = session.scalar(select(TelemetrySyncState).where(
+            TelemetrySyncState.registered_device_id == device_id,
+            TelemetrySyncState.sensor_boot_id == boot_id,
+        ))
+        if state is None:
+            state = TelemetrySyncState(
+                registered_device_id=device_id, sensor_boot_id=boot_id,
+                first_sequence=sequence, highest_contiguous_sequence=sequence,
+                highest_seen_sequence=sequence, missing_sequence_count=0,
+            )
+            session.add(state)
+        return state
+
+    def _update_sync_state(self, session: Session, device_id: int, boot_id: str, sequence: int) -> TelemetrySyncState:
+        state = self._sync_state(session, device_id, boot_id, sequence)
+        state.highest_seen_sequence = max(state.highest_seen_sequence, sequence)
+        while state.highest_contiguous_sequence < state.highest_seen_sequence:
+            candidate = state.highest_contiguous_sequence + 1
+            exists = session.scalar(select(Reading.id).where(
+                Reading.registered_device_id == device_id,
+                Reading.sensor_boot_id == boot_id,
+                Reading.sequence_number == candidate,
+            ).limit(1))
+            if exists is None:
+                break
+            state.highest_contiguous_sequence = candidate
+        observed = session.scalar(select(func.count(func.distinct(Reading.sequence_number))).where(
+            Reading.registered_device_id == device_id,
+            Reading.sensor_boot_id == boot_id,
+            Reading.sequence_number >= state.first_sequence,
+            Reading.sequence_number <= state.highest_seen_sequence,
+        )) or 0
+        state.missing_sequence_count = max(0, state.highest_seen_sequence - state.first_sequence + 1 - observed)
+        state.updated_at = utc_now()
+        return state

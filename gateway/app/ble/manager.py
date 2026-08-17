@@ -85,6 +85,12 @@ class BleManager:
         await connection.send_command(normalized)
         return normalized
 
+    async def persistence_acknowledgement(self, device_id: str, boot_id: str, sequence: int) -> None:
+        connection = self.connections.get(device_id)
+        if connection is None:
+            return
+        await connection.send_persistence_ack(boot_id, sequence)
+
     def runtime(self, device_id: str) -> dict:
         connection = self.connections.get(device_id)
         return (

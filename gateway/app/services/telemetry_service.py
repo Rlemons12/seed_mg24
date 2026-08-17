@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ class TelemetryService:
         gateway_id: str = "00000000-0000-0000-0000-000000000000",
         persistence_service: TelemetryPersistenceService | None = None,
         vibration_service: VibrationConditionService | None = None,
+        acknowledgement_sender: Callable[[str, str, int], Awaitable[None]] | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.websocket_manager = websocket_manager
@@ -34,6 +36,7 @@ class TelemetryService:
         self.max_payload_json_bytes = max_payload_json_bytes
         self.persistence = persistence_service or TelemetryPersistenceService(session_factory, gateway_id)
         self.vibration = vibration_service or VibrationConditionService(session_factory, gateway_id)
+        self.acknowledgement_sender = acknowledgement_sender
         self._sessions: dict[str, tuple[str, int | None, datetime | None]] = {}
         self._dedupe: dict[str, OrderedDict[str, None]] = {}
         self.vibration_counters = {
@@ -41,7 +44,18 @@ class TelemetryService:
             "baseline_eligible": 0, "baseline_excluded": 0, "database_writes": 0,
         }
 
-    def _session_for(self, device_id: str, uptime: int | None, received_at):
+    def _session_for(self, device_id: str, uptime: int | None, received_at, sensor_boot_id: str | None = None):
+        if sensor_boot_id is not None:
+            session_id = f"sensor:{sensor_boot_id}"
+            current = self._sessions.get(device_id)
+            boot_time = received_at - timedelta(milliseconds=uptime) if uptime is not None else None
+            if current is None or current[0] != session_id:
+                current = (session_id, uptime, boot_time)
+            elif uptime is not None:
+                current = (session_id, uptime, current[2])
+            self._sessions[device_id] = current
+            measured_at = current[2] + timedelta(milliseconds=uptime) if uptime is not None and current[2] is not None else None
+            return session_id, measured_at
         current = self._sessions.get(device_id)
         if current is None or uptime is not None and current[1] is not None and uptime < current[1]:
             boot_time = received_at - timedelta(milliseconds=uptime) if uptime is not None else None
@@ -74,14 +88,16 @@ class TelemetryService:
         if payload.device_id is not None and payload.device_id != registered_device_id:
             raise ValueError("telemetry device_id does not match the registered device")
         dedupe_key = self._dedupe_key(payload, payload_bytes)
-        if self._is_duplicate(registered_device_id, dedupe_key):
+        if payload.sensor_boot_id is None and self._is_duplicate(registered_device_id, dedupe_key):
             if payload.record_type == "vibration":
                 self.vibration_counters["duplicates"] += 1
             return []
         encoded_original = json.dumps(payload.original_payload, separators=(",", ":"), allow_nan=False)
         if len(encoded_original.encode()) > self.max_payload_json_bytes:
             raise ValueError("validated diagnostic payload exceeds storage maximum")
-        session_id, measured_at = self._session_for(registered_device_id, payload.device_uptime_ms, payload.received_at)
+        session_id, measured_at = self._session_for(
+            registered_device_id, payload.device_uptime_ms, payload.received_at, payload.sensor_boot_id
+        )
         if payload.record_type == "vibration":
             self.vibration_counters["received"] += 1
             if payload.vibration is None:
@@ -110,7 +126,7 @@ class TelemetryService:
             })
             return []
         try:
-            rows = await asyncio.to_thread(
+            outcome = await asyncio.to_thread(
                 self.persistence.persist,
                 registered_device_id,
                 payload,
@@ -121,6 +137,7 @@ class TelemetryService:
         except TelemetryPersistenceError:
             logger.exception("Telemetry packet was not persisted for node=%s", registered_device_id)
             raise
+        rows = outcome.rows
         self._remember(registered_device_id, dedupe_key)
         await self.websocket_manager.broadcast(
             "telemetry",
@@ -135,4 +152,12 @@ class TelemetryService:
                 "channels": {name: value.model_dump(mode="json") for name, value in payload.channels.items()},
             },
         )
+        if (
+            self.acknowledgement_sender is not None
+            and payload.sensor_boot_id is not None
+            and outcome.acknowledged_sequence is not None
+        ):
+            await self.acknowledgement_sender(
+                registered_device_id, payload.sensor_boot_id, outcome.acknowledged_sequence
+            )
         return rows

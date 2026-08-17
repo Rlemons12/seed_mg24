@@ -193,6 +193,7 @@ class Reading(Base):
         Index("ix_readings_channel_received", "channel", "received_at"),
         Index("ix_readings_gateway_received", "gateway_id", "received_at"),
         UniqueConstraint("registered_device_id", "session_id", "sequence_number", "channel", name="uq_reading_sequence_channel"),
+        UniqueConstraint("registered_device_id", "sensor_boot_id", "sequence_number", "channel", name="uq_reading_boot_sequence_channel"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -204,6 +205,8 @@ class Reading(Base):
     measured_at_device_uptime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     device_uptime_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sequence_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sensor_boot_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    sample_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False)
     record_type: Mapped[str] = mapped_column(String(24), nullable=False, default="measurement")
     channel: Mapped[str] = mapped_column(String(96), nullable=False)
@@ -216,6 +219,25 @@ class Reading(Base):
     installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     interface_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device: Mapped[RegisteredDevice] = relationship(back_populates="readings")
+
+
+class TelemetrySyncState(Base):
+    __tablename__ = "telemetry_sync_states"
+    __table_args__ = (
+        UniqueConstraint("registered_device_id", "sensor_boot_id", name="uq_telemetry_sync_device_boot"),
+        Index("ix_telemetry_sync_device_updated", "registered_device_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    sensor_boot_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    first_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    highest_contiguous_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    highest_seen_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    missing_sequence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 
 
 class VibrationWindow(Base):

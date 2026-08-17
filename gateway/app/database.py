@@ -73,6 +73,8 @@ def migrate_existing_database(engine: Engine) -> None:
             "gateway_id": "VARCHAR(36)",
             "reading_uuid": "VARCHAR(36)",
             "measured_at": "DATETIME",
+            "sensor_boot_id": "VARCHAR(16)",
+            "sample_count": "INTEGER",
         }
         with engine.begin() as connection:
             for name, sql_type in additions.items():
@@ -85,10 +87,17 @@ def migrate_existing_database(engine: Engine) -> None:
                 "ix_readings_channel_received": ("channel", "received_at"),
                 "ix_readings_device_measured": ("registered_device_id", "measured_at"),
                 "ix_readings_gateway_received": ("gateway_id", "received_at"),
+                "ix_readings_device_boot_sequence": ("registered_device_id", "sensor_boot_id", "sequence_number"),
             }
             for name, index_columns in indexes.items():
                 if set(index_columns) <= all_columns:
                     connection.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON readings ({', '.join(index_columns)})"))
+            if {"registered_device_id", "sensor_boot_id", "sequence_number", "channel"} <= all_columns:
+                connection.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_readings_device_boot_sequence_channel "
+                    "ON readings (registered_device_id, sensor_boot_id, sequence_number, channel) "
+                    "WHERE sensor_boot_id IS NOT NULL AND sequence_number IS NOT NULL"
+                ))
     inspector = inspect(engine)
     if "readings" in inspector.get_table_names() and "gateway_identity" in inspector.get_table_names():
         with engine.begin() as connection:

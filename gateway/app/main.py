@@ -124,6 +124,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             await websocket_manager.broadcast("device_status", device_id, {"connection_status": state, "last_error": error})
 
         manager = BleManager(settings, telemetry_service.ingest, status_callback, client_factory=client_factory)
+        telemetry_service.acknowledgement_sender = manager.persistence_acknowledgement
         app.state.ble_manager = manager
 
         async def retention_loop() -> None:

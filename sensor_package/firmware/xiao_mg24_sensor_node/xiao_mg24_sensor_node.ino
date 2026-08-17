@@ -49,6 +49,7 @@ uint32_t sample_interval_ms = 100;
 uint32_t last_sample_ms = 0;
 uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
+char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
@@ -151,6 +152,8 @@ void ble_start_advertising();
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
 void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
 bool ble_send_payload(const char* payload);
+bool ble_send_oldest_buffered();
+void generate_telemetry_boot_id();
 void ble_publish_vibration();
 void ble_initialize_when_ready();
 void ble_refresh_onboarding_identity();
@@ -295,7 +298,7 @@ bool handle_provision_command(const String& command) {
   microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
   microphone_runtime_config.filter_window = verified.filter_window;
   microphone_runtime_config.enabled = verified.enabled != 0;
-  sample_interval_ms = verified.report_interval_ms;
+  sample_interval_ms = verified.sample_interval_ms;
   microphone_channel.reconfigure(&microphone_runtime_config);
 #if BLE_SUPPORTED
   ble_refresh_onboarding_identity();
@@ -362,7 +365,7 @@ bool handle_configuration_transaction(const String& command) {
   microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
   microphone_runtime_config.filter_window = verified.filter_window;
   microphone_runtime_config.enabled = verified.enabled != 0;
-  sample_interval_ms = verified.report_interval_ms;
+  sample_interval_ms = verified.sample_interval_ms;
   microphone_channel.reconfigure(&microphone_runtime_config);
   report_provisioning_state(transaction_id.c_str(), "configured");
   return true;
@@ -380,7 +383,7 @@ bool handle_config_command(const String& command) {
   if (version != "1") { command_result(false, "unsupported_version"); return true; }
   if (channel != "MICROPHONE_RAW") { command_result(false, "unknown_channel"); return true; }
   if (field == "RESTORE" && value.length() == 0) {
-    microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; sample_interval_ms = microphone_runtime_config.report_interval_ms;
+    microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; sample_interval_ms = microphone_runtime_config.sample_interval_ms;
     microphone_channel.reconfigure(&microphone_runtime_config); command_result(true, "restored"); return true;
   }
   uint32_t numeric = 0;
@@ -408,6 +411,23 @@ void handle_command(String command) {
     return;
   }
   command.toUpperCase();
+
+  if (command.startsWith("TACK 2 ")) {
+    int separator = command.indexOf(' ', 7);
+    if (separator < 0) { command_result(false, "invalid_ack"); return; }
+    String acknowledged_boot = command.substring(7, separator);
+    String acknowledged_sequence = command.substring(separator + 1);
+    uint32_t sequence = 0;
+    if (!acknowledged_boot.equalsIgnoreCase(telemetry_boot_id) ||
+        !parse_bounded_uint(acknowledged_sequence, 0, 0xFFFFFFFFUL, &sequence)) {
+      command_result(false, "invalid_ack"); return;
+    }
+    offline_buffer.acknowledge_through(sequence);
+#if BLE_SUPPORTED
+    ble_send_oldest_buffered();
+#endif
+    return;
+  }
 
   if (bootstrap_only && !command.startsWith("PROV ") && !command.startsWith("PROVGET ")) {
     command_result(false, "bootstrap_only");
@@ -660,6 +680,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_system_boot_id:
       ble_stack_ready = true;
       ble_system_booted = true;
+      generate_telemetry_boot_id();
       break;
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
@@ -771,7 +792,8 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
            "\"reporting_modes\":[\"periodic\",\"change\",\"event\",\"heartbeat\"]},"
-           "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true}}",
+           "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
+           "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true}}",
            runtime_node_id(), FIRMWARE_VERSION);
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_READ,
@@ -875,31 +897,44 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
     return;
   }
 
-  snprintf(ble_json, sizeof(ble_json),
-           "{\"t\":\"tele\",\"v\":1,\"s\":%lu,\"ms\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,"
-           "\"bs\":1,\"be\":%d,\"bc\":%d,\"imu\":%d,\"mk\":%d,"
+  int written = snprintf(ble_json, sizeof(ble_json),
+           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
-           (unsigned long)telemetry_sequence++, millis(), mic_level, mic_pct, batt, led_brightness,
-           ble_enabled ? 1 : 0, ble_connected ? 1 : 0, imu_ok ? 1 : 0, mic_ok ? 1 : 0,
+           runtime_node_id(), telemetry_boot_id, (unsigned long)telemetry_sequence++, millis(),
+           (unsigned long)max(1UL, microphone_channel.samples_since_report()), mic_level, mic_pct, batt, led_brightness,
            ax, ay, az, gx, gy, gz, analog_json);
+  if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
+    processing_error_count++;
+    return;
+  }
   char current_telemetry[sizeof(ble_json)];
   strlcpy(current_telemetry, ble_json, sizeof(current_telemetry));
 
-  if (!ble_connected) {
-    TelemetryRecord record = {};
-    record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
-    record.sequence_number = telemetry_sequence - 1; record.uptime_ms = millis();
-    strlcpy(record.channel_id, "microphone_raw", sizeof(record.channel_id));
-    record.raw_value = mic_level; record.normalized_value = 0; record.has_normalized_value = false;
-    record.quality = MeasurementQuality::Uncalibrated; record.state = MonitoringState::Normal; record.delayed = false;
-    offline_buffer.push(record);
-  } else {
-    TelemetryRecord delayed;
-    if (offline_buffer.pop(&delayed) && encode_record(delayed, runtime_node_id(), ble_json, sizeof(ble_json))) {
-      ble_send_payload(ble_json);
-    }
-    ble_send_payload(current_telemetry);
+  TelemetryRecord record = {};
+  record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
+  record.sequence_number = telemetry_sequence - 1; record.uptime_ms = millis();
+  strlcpy(record.payload, current_telemetry, sizeof(record.payload));
+  offline_buffer.push(record);
+  ble_send_oldest_buffered();
+  microphone_channel.mark_reported(millis());
+}
+
+bool ble_send_oldest_buffered() {
+  if (!ble_connected || !ble_notify_enabled) return false;
+  TelemetryRecord record = {};
+  return offline_buffer.peek_oldest(&record) && ble_send_payload(record.payload);
+}
+
+void generate_telemetry_boot_id() {
+  uint8_t random_bytes[8] = {};
+  size_t random_length = 0;
+  sl_status_t status = sl_bt_system_get_random_data(sizeof(random_bytes), sizeof(random_bytes), &random_length, random_bytes);
+  if (status != SL_STATUS_OK || random_length != sizeof(random_bytes)) {
+    processing_error_count++;
+    for (size_t i = 0; i < sizeof(random_bytes); ++i) random_bytes[i] = (uint8_t)(micros() >> ((i % 4) * 8));
   }
+  for (size_t i = 0; i < sizeof(random_bytes); ++i) snprintf(telemetry_boot_id + i * 2, 3, "%02x", random_bytes[i]);
+  telemetry_sequence = 1;
 }
 
 bool ble_send_payload(const char* payload) {
@@ -1013,7 +1048,7 @@ void loop() {
   update_microphone();
 
   const uint32_t now = millis();
-  if (elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
+  if (microphone_channel.report_due(now)) {
     last_sample_ms = now;
     print_telemetry();
   }
@@ -1022,8 +1057,13 @@ void loop() {
     last_heartbeat_ms = now;
     if (encode_heartbeat(telemetry_sequence++, now, battery_voltage(), offline_buffer.size(),
                          offline_buffer.dropped_count(), processing_error_count, sensor_error_count,
-                         runtime_node_id(), ble_json, sizeof(ble_json))) {
-      ble_send_payload(ble_json);
+                         runtime_node_id(), telemetry_boot_id, ble_json, sizeof(ble_json))) {
+      TelemetryRecord heartbeat = {};
+      heartbeat.type = RecordType::Heartbeat; heartbeat.priority = RecordPriority::Heartbeat;
+      heartbeat.sequence_number = telemetry_sequence - 1; heartbeat.uptime_ms = now;
+      strlcpy(heartbeat.payload, ble_json, sizeof(heartbeat.payload));
+      offline_buffer.push(heartbeat);
+      ble_send_oldest_buffered();
     } else {
       processing_error_count++;
     }

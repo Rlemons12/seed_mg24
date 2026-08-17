@@ -26,6 +26,8 @@
 #endif
 #define TELEMETRY_SCHEMA_VERSION 1
 #define TELEMETRY_BUFFER_CAPACITY 24
+static_assert(sizeof(TelemetryRecord) == 292, "telemetry record memory budget changed");
+static_assert(TELEMETRY_BUFFER_CAPACITY * sizeof(TelemetryRecord) == 7008, "telemetry buffer memory budget changed");
 #define MAX_FILTER_WINDOW 9
 #define DEFAULT_HEARTBEAT_INTERVAL_MS 30000UL
 

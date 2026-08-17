@@ -24,6 +24,7 @@
 .mg-shell .sensor-summary__identity small { font-size: .68rem; }
 .mg-shell .sensor-summary__status { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .55rem 1rem; color: var(--mg-muted); font-size: .76rem; font-weight: 650; }
 .mg-shell .sensor-summary__condition { font-size: .72rem; }
+.mg-shell .sensor-summary__battery { color: var(--mg-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mg-shell .mg-module-sensor-card__chevron { width: .65rem; height: .65rem; flex: 0 0 auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .16s ease; }
 .mg-shell .mg-module-sensor-card__toggle[aria-expanded="true"] .mg-module-sensor-card__chevron { transform: rotate(225deg); }
 .mg-shell .mg-module-sensor-card__details { padding: 1.1rem; border-top: 1px solid var(--mg-border); }

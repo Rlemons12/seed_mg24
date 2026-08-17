@@ -16,13 +16,19 @@ class ReadingRepository:
         return readings
 
     def latest(self, registered_device_id: int) -> list[Reading]:
-        latest_ids = (
-            select(func.max(Reading.id).label("id"))
+        # Production measurement packets contain the complete live channel set. Read a
+        # bounded recent tail instead of grouping the device's entire retained history;
+        # the latter becomes prohibitively expensive on long-lived edge databases.
+        recent = list(self.session.scalars(
+            select(Reading)
             .where(Reading.registered_device_id == registered_device_id)
-            .group_by(Reading.channel)
-            .subquery()
-        )
-        return list(self.session.scalars(select(Reading).join(latest_ids, Reading.id == latest_ids.c.id).order_by(Reading.channel)))
+            .order_by(desc(Reading.received_at))
+            .limit(512)
+        ))
+        latest_by_channel: dict[str, Reading] = {}
+        for reading in recent:
+            latest_by_channel.setdefault(reading.channel, reading)
+        return sorted(latest_by_channel.values(), key=lambda reading: reading.channel)
 
     def history(
         self,

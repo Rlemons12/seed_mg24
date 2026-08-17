@@ -187,3 +187,14 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert "other.setAttribute(\"aria-expanded\", \"false\")" in disclosure
     assert ".sensor-tabs" in css and ".sensor-summary__status" in css
     assert ".live-input-grid--compact" in css
+
+
+def test_sensor_card_shows_live_battery_voltage_without_inventing_percentage():
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    assert 'row.channel === "battery_voltage"' in app
+    assert '`Battery ${value.toFixed(2)} V`' in app
+    assert '"sensor-summary__battery"' in app
+    assert 'card.querySelector(".sensor-summary__battery")' in app
+    assert ".sensor-summary__battery" in css
+    assert "Battery ${value.toFixed(2)} %" not in app

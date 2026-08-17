@@ -102,6 +102,8 @@ function refreshLive() {
       const name = card.querySelector(".mg-module-sensor-card__name"); if (name) name.textContent = node.display_name;
       const runtime = card.querySelector(".node-runtime-state");
       if (runtime) { runtime.textContent = node.connection_status; runtime.className = `state node-runtime-state ${node.connection_status}`; }
+      const battery = card.querySelector(".sensor-summary__battery");
+      if (battery) battery.textContent = batterySummary(node.node_id);
       card.querySelectorAll(".live-input-grid").forEach((inputGrid) => {
         const rows = inputGrid.classList.contains("live-input-grid--compact")
           ? (state.readings[node.node_id] || []).filter((row) => ["acceleration_x", "acceleration_y", "acceleration_z", "angular_velocity_x", "angular_velocity_y", "angular_velocity_z"].includes(row.channel))
@@ -122,6 +124,13 @@ function refreshLive() {
 function inputName(channel) { return channel.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()); }
 function unitLabel(unit) { return ({g:"g (gravity)",dps:"°/s (degrees per second)",V:"V (volts)",adc_count:"ADC counts",percent:"% (percent)",pwm_count:"PWM counts",count:"count"})[unit] || unit || "unit not reported"; }
 function readingText(reading) { const value=reading.normalized_value ?? reading.raw_value; const shown=typeof value==="number" ? Number(value.toFixed(3)) : value; return `${shown ?? "Unavailable"} ${unitLabel(reading.unit)}`; }
+function batteryReading(nodeId) { return (state.readings[nodeId] || []).find((row) => row.channel === "battery_voltage"); }
+function batterySummary(nodeId) {
+  const reading = batteryReading(nodeId);
+  if (!reading) return "Battery —";
+  const value = reading.normalized_value ?? reading.raw_value;
+  return typeof value === "number" ? `Battery ${value.toFixed(2)} V` : "Battery unavailable";
+}
 function inputOrder(channel) { const primary=["acceleration_x","acceleration_y","acceleration_z","angular_velocity_x","angular_velocity_y","angular_velocity_z"]; const index=primary.indexOf(channel); if(index>=0)return index; if(channel.startsWith("analog_"))return 100+Number(channel.slice(7)); return 20; }
 
 function renderLiveInputs(inputGrid, node, rows) {
@@ -219,6 +228,7 @@ function renderNodes() {
     const summary = el("span", undefined, "sensor-summary__status");
     summary.append(el("span", "Loading condition", "condition-state sensor-summary__condition"),
       el("span", node.connection_status, `state node-runtime-state ${node.connection_status}`),
+      el("span", batterySummary(node.node_id), "sensor-summary__battery"),
       el("span", "Score —", "sensor-summary__score"), el("span", "Updated —", "sensor-summary__updated"));
     toggle.append(identity, summary, chevron);
     heading.append(toggle);

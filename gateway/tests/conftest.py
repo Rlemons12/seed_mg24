@@ -48,7 +48,7 @@ def app(settings):
 
 @pytest.fixture
 def client(app):
-    with TestClient(app) as test_client:
+    with TestClient(app, headers={"Origin": "http://testserver"}) as test_client:
         yield test_client
 
 

@@ -1,3 +1,5 @@
+import base64
+import binascii
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -35,6 +37,10 @@ def history(
     start: datetime | None = None,
     end: datetime | None = None,
     channel: str | None = Query(default=None, max_length=96),
+    installation_id: str | None = Query(default=None, max_length=64),
+    interface_id: str | None = Query(default=None, max_length=64),
+    cursor: str | None = Query(default=None, max_length=256),
+    include_total: bool = True,
 ) -> ReadingPage:
     settings = request.app.state.settings
     if limit > settings.history_page_size_max:
@@ -42,13 +48,39 @@ def history(
     now = datetime.now(UTC)
     end = end or now
     start = start or end - timedelta(days=1)
+    end = end.replace(tzinfo=UTC) if end.tzinfo is None else end.astimezone(UTC)
+    start = start.replace(tzinfo=UTC) if start.tzinfo is None else start.astimezone(UTC)
     if end < start:
         raise HTTPException(status_code=422, detail="end must not precede start")
     if end - start > timedelta(days=settings.history_max_days):
         raise HTTPException(status_code=422, detail="requested history range is too large")
+    before = None
+    if cursor:
+        try:
+            decoded = base64.urlsafe_b64decode(cursor.encode()).decode()
+            cursor_time, cursor_id = decoded.rsplit("|", 1)
+            before_at = datetime.fromisoformat(cursor_time)
+            before = (before_at.replace(tzinfo=UTC) if before_at.tzinfo is None else before_at.astimezone(UTC), int(cursor_id))
+        except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+            raise HTTPException(status_code=422, detail="cursor is invalid") from exc
     device = _device(session, device_id)
-    items, total = ReadingRepository(session).history(device.id, offset=offset, limit=limit, start=start, end=end, channel=channel)
-    return ReadingPage(items=items, total=total, offset=offset, limit=limit)
+    items, total = ReadingRepository(session).history(
+        device.id,
+        offset=offset,
+        limit=limit,
+        start=start,
+        end=end,
+        channel=channel,
+        installation_id=installation_id,
+        interface_id=interface_id,
+        before=before,
+        include_total=include_total,
+    )
+    next_cursor = None
+    if len(items) == limit:
+        marker = f"{items[-1].received_at.isoformat()}|{items[-1].id}".encode()
+        next_cursor = base64.urlsafe_b64encode(marker).decode()
+    return ReadingPage(items=items, total=total, offset=offset, limit=limit, next_cursor=next_cursor)
 
 
 @ws_router.websocket("/ws/telemetry")

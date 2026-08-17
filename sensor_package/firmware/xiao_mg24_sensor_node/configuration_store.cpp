@@ -79,14 +79,19 @@ static ConfigSlot read_config_slot(NvmBackend& backend,uint32_t key){
   result.generation=view.generation;result.status=StoreStatus::Ok;return result;
 }
 StoreStatus PersistentConfigurationStore::load(StoredChannelConfiguration* out) const{
-  if(!out)return StoreStatus::InvalidArgument;ConfigSlot a=read_config_slot(backend_,ApplicationNvmKeys::kConfigurationSlotA),b=read_config_slot(backend_,ApplicationNvmKeys::kConfigurationSlotB);
+  if(!out)return StoreStatus::InvalidArgument;
+  ConfigSlot a=read_config_slot(backend_,ApplicationNvmKeys::kConfigurationSlotA),b=read_config_slot(backend_,ApplicationNvmKeys::kConfigurationSlotB);
   bool av=a.status==StoreStatus::Ok,bv=b.status==StoreStatus::Ok;if(!av&&!bv){if(a.status==StoreStatus::NotFound&&b.status==StoreStatus::NotFound)return StoreStatus::NotFound;return StoreStatus::Corrupt;}
-  if(av&&bv&&a.generation==b.generation)return StoreStatus::GenerationConflict;*out=(bv&&(!av||generation_newer(b.generation,a.generation)))?b.value:a.value;if(av&&bv)return StoreStatus::Ok;return (av?b.status:a.status)==StoreStatus::NotFound?StoreStatus::Ok:StoreStatus::RecoveredFromPrevious;
+  if(av&&bv&&a.generation==b.generation)return StoreStatus::GenerationConflict;
+  *out=(bv&&(!av||generation_newer(b.generation,a.generation)))?b.value:a.value;if(av&&bv)return StoreStatus::Ok;return (av?b.status:a.status)==StoreStatus::NotFound?StoreStatus::Ok:StoreStatus::RecoveredFromPrevious;
 }
 StoreStatus PersistentConfigurationStore::write(const StoredChannelConfiguration& input,StoredChannelConfiguration* verified){
-  if(!verified)return StoreStatus::InvalidArgument; StoredChannelConfiguration current={};StoreStatus old=load(&current);uint32_t generation=(old==StoreStatus::Ok||old==StoreStatus::RecoveredFromPrevious)?current.generation+1:1;
-  if(old!=StoreStatus::Ok&&old!=StoreStatus::RecoveredFromPrevious&&old!=StoreStatus::NotFound)return old; StoredChannelConfiguration value=input;value.magic=CONFIG_MAGIC;value.schema_version=1;value.reserved=0;value.reserved2=0;value.generation=generation;value.checksum=configuration_checksum(value);
-  if(!validate_stored_configuration(value))return StoreStatus::InvalidArgument;uint32_t target=(generation&1)?ApplicationNvmKeys::kConfigurationSlotA:ApplicationNvmKeys::kConfigurationSlotB;
+  if(!verified)return StoreStatus::InvalidArgument;
+  StoredChannelConfiguration current={};StoreStatus old=load(&current);uint32_t generation=(old==StoreStatus::Ok||old==StoreStatus::RecoveredFromPrevious)?current.generation+1:1;
+  if(old!=StoreStatus::Ok&&old!=StoreStatus::RecoveredFromPrevious&&old!=StoreStatus::NotFound)return old;
+  StoredChannelConfiguration value=input;value.magic=CONFIG_MAGIC;value.schema_version=1;value.reserved=0;value.reserved2=0;value.generation=generation;value.checksum=configuration_checksum(value);
+  if(!validate_stored_configuration(value))return StoreStatus::InvalidArgument;
+  uint32_t target=(generation&1)?ApplicationNvmKeys::kConfigurationSlotA:ApplicationNvmKeys::kConfigurationSlotB;
   uint8_t payload[sizeof(StoredChannelConfiguration)];serialize_configuration(value,payload);uint8_t record[kPersistentMaxRecord];size_t size=0;StoreStatus s=encode_persistent_record(PersistentRecordType::Configuration,generation,0,payload,sizeof(payload),record,sizeof(record),&size);if(s!=StoreStatus::Ok)return s;
   s=backend_.write(target,record,size);if(s!=StoreStatus::Ok)return s;ConfigSlot check=read_config_slot(backend_,target);if(check.status!=StoreStatus::Ok||check.generation!=generation)return StoreStatus::ReadbackFailed;*verified=check.value;return StoreStatus::Ok;
 }

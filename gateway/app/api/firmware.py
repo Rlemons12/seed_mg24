@@ -22,6 +22,10 @@ class InstallRequest(BaseModel):
     package_id: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{1,63}$")
 
 
+class DeveloperApprovalRequest(InstallRequest):
+    confirmation: str
+
+
 @router.get("/packages")
 def packages(request: Request) -> list[dict]:
     require_loopback(request)
@@ -32,6 +36,23 @@ def packages(request: Request) -> list[dict]:
 def boards(request: Request) -> list[dict]:
     require_loopback(request)
     return request.app.state.firmware_installer.boards()
+
+
+@router.post("/developer-approve")
+def developer_approve(body: DeveloperApprovalRequest, request: Request) -> dict:
+    require_loopback(request)
+    if body.confirmation != "APPROVE DEVELOPMENT FIRMWARE":
+        raise HTTPException(status_code=422, detail="explicit development firmware confirmation is required")
+    matches = [
+        board for board in request.app.state.firmware_installer.boards()
+        if board["hardware_serial"] == body.hardware_serial
+    ]
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="exactly one matching supported board is required")
+    try:
+        return request.app.state.firmware_catalog.approve_development(body.package_id)
+    except FirmwareValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/install", status_code=202)

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -37,12 +38,25 @@ class RegisteredDevice(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connection_status: Mapped[str] = mapped_column(String(32), nullable=False, default="disconnected")
+    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True, index=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removal_reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    factory_reset_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_requested")
     readings: Mapped[list["Reading"]] = relationship(back_populates="device")
 
     @property
     def node_id(self) -> str:
         """Compatibility alias: legacy device_id is the stable MG24 node identity."""
         return self.device_id
+
+
+class GatewayIdentity(Base):
+    __tablename__ = "gateway_identity"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    gateway_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class SensorInstallation(Base):
@@ -102,6 +116,55 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
 
 
+class DeviceLifecycleEvent(Base):
+    __tablename__ = "device_lifecycle_events"
+    __table_args__ = (Index("ix_device_lifecycle_subject_created", "device_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    device_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    hardware_id: Mapped[str | None] = mapped_column(String(18), nullable=True)
+    ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    connectivity_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    method: Mapped[str] = mapped_column(String(48), nullable=False)
+    factory_reset_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False, index=True)
+
+
+class SensorReregistrationWorkflow(Base):
+    """Durable, non-secret state for the reset-and-re-register operator workflow."""
+
+    __tablename__ = "sensor_reregistration_workflows"
+
+    operation_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    source_record_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    source_device_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    source_display_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    hardware_id: Mapped[str] = mapped_column(String(18), nullable=False, index=True)
+    source_ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    state: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    selected_port: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reset_operation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    backup_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    backup_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    registration_choice: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    target_device_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    target_display_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    target_location: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    target_ble_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    configuration_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class NodeFirmwareHistory(Base):
     __tablename__ = "node_firmware_history"
     __table_args__ = (Index("ix_firmware_history_node_seen", "node_id", "last_seen_at"),)
@@ -124,12 +187,20 @@ class Reading(Base):
     __table_args__ = (
         Index("ix_readings_device_received", "registered_device_id", "received_at"),
         Index("ix_readings_device_channel_received", "registered_device_id", "channel", "received_at"),
+        Index("ix_readings_device_measured", "registered_device_id", "measured_at"),
+        Index("ix_readings_installation_received", "installation_id", "received_at"),
+        Index("ix_readings_installation_channel_received", "installation_id", "channel", "received_at"),
+        Index("ix_readings_channel_received", "channel", "received_at"),
+        Index("ix_readings_gateway_received", "gateway_id", "received_at"),
         UniqueConstraint("registered_device_id", "session_id", "sequence_number", "channel", name="uq_reading_sequence_channel"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    reading_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
+    gateway_id: Mapped[str] = mapped_column(String(36), nullable=False, default="00000000-0000-0000-0000-000000000000")
     registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     measured_at_device_uptime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     device_uptime_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sequence_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -143,4 +214,119 @@ class Reading(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     delayed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    interface_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device: Mapped[RegisteredDevice] = relationship(back_populates="readings")
+
+
+class VibrationWindow(Base):
+    __tablename__ = "vibration_windows"
+    __table_args__ = (
+        Index("ix_vibration_device_observed", "registered_device_id", "observed_at"),
+        Index("ix_vibration_installation_observed", "installation_id", "observed_at"),
+        UniqueConstraint(
+            "registered_device_id", "session_id", "window_sequence", "algorithm_version",
+            name="uq_vibration_device_session_window_algorithm",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    window_uuid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
+    gateway_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    window_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    device_uptime_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    baseline_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    configured_sample_rate_hz: Mapped[float] = mapped_column(Float, nullable=False, default=416.0)
+    effective_sample_rate_hz: Mapped[float] = mapped_column(Float, nullable=False)
+    fft_size: Mapped[int] = mapped_column(Integer, nullable=False, default=256)
+    validity: Mapped[str] = mapped_column(String(32), nullable=False)
+    accel_rms_x_g: Mapped[float] = mapped_column(Float, nullable=False)
+    accel_rms_y_g: Mapped[float] = mapped_column(Float, nullable=False)
+    accel_rms_z_g: Mapped[float] = mapped_column(Float, nullable=False)
+    accel_peak_x_g: Mapped[float] = mapped_column(Float, nullable=False)
+    accel_peak_y_g: Mapped[float] = mapped_column(Float, nullable=False)
+    accel_peak_z_g: Mapped[float] = mapped_column(Float, nullable=False)
+    crest_x: Mapped[float] = mapped_column(Float, nullable=False)
+    crest_y: Mapped[float] = mapped_column(Float, nullable=False)
+    crest_z: Mapped[float] = mapped_column(Float, nullable=False)
+    kurtosis_x: Mapped[float] = mapped_column(Float, nullable=False)
+    kurtosis_y: Mapped[float] = mapped_column(Float, nullable=False)
+    kurtosis_z: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_frequency_x_hz: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_frequency_y_hz: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_frequency_z_hz: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_amplitude_x_g: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_amplitude_y_g: Mapped[float] = mapped_column(Float, nullable=False)
+    dominant_amplitude_z_g: Mapped[float] = mapped_column(Float, nullable=False)
+    gyro_rms_x_dps: Mapped[float] = mapped_column(Float, nullable=False)
+    gyro_rms_y_dps: Mapped[float] = mapped_column(Float, nullable=False)
+    gyro_rms_z_dps: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class VibrationBaseline(Base):
+    __tablename__ = "vibration_baselines"
+    __table_args__ = (
+        UniqueConstraint("registered_device_id", "installation_id", "algorithm_version", name="uq_vibration_baseline_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False, index=True)
+    installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    baseline_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="building")
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    minimum_samples: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    statistics_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    last_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_window_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    established_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    last_relearn_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class VibrationBaselineHistory(Base):
+    __tablename__ = "vibration_baseline_history"
+    __table_args__ = (
+        UniqueConstraint("registered_device_id", "installation_id", "algorithm_version", "baseline_version",
+                         name="uq_vibration_baseline_history_version"),
+        Index("ix_vibration_baseline_history_device_created", "registered_device_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    baseline_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    algorithm_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="superseded")
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    minimum_samples: Mapped[int] = mapped_column(Integer, nullable=False)
+    statistics_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    established_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    reason: Mapped[str | None] = mapped_column(String(240), nullable=True)
+
+
+class VibrationCondition(Base):
+    __tablename__ = "vibration_conditions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    baseline_id: Mapped[int | None] = mapped_column(ForeignKey("vibration_baselines.id", ondelete="SET NULL"), nullable=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="BASELINE_PENDING")
+    baseline_similarity_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    factors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    pending_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_window_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)

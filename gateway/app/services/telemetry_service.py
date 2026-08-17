@@ -1,17 +1,20 @@
+import asyncio
 import hashlib
 import json
+import logging
 from collections import OrderedDict
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy.orm import Session, sessionmaker
 
 from gateway.app.ble.telemetry_parser import parse_telemetry
-from gateway.app.models import Reading, utc_now
-from gateway.app.repositories.device_repository import DeviceRepository
-from gateway.app.repositories.installation_repository import InstallationRepository
-from gateway.app.repositories.reading_repository import ReadingRepository
-from gateway.app.services.node_capability_service import NodeCapabilityService
+from gateway.app.models import Reading
+from gateway.app.services.telemetry_persistence import TelemetryPersistenceError, TelemetryPersistenceService
+from gateway.app.services.vibration_condition import VibrationConditionService
 from gateway.app.services.websocket_manager import WebSocketManager
+
+logger = logging.getLogger(__name__)
 
 
 class TelemetryService:
@@ -21,100 +24,104 @@ class TelemetryService:
         websocket_manager: WebSocketManager,
         max_payload_bytes: int = 2048,
         max_payload_json_bytes: int = 4096,
+        gateway_id: str = "00000000-0000-0000-0000-000000000000",
+        persistence_service: TelemetryPersistenceService | None = None,
+        vibration_service: VibrationConditionService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.websocket_manager = websocket_manager
         self.max_payload_bytes = max_payload_bytes
         self.max_payload_json_bytes = max_payload_json_bytes
-        self._sessions: dict[str, tuple[str, int | None]] = {}
+        self.persistence = persistence_service or TelemetryPersistenceService(session_factory, gateway_id)
+        self.vibration = vibration_service or VibrationConditionService(session_factory, gateway_id)
+        self._sessions: dict[str, tuple[str, int | None, datetime | None]] = {}
         self._dedupe: dict[str, OrderedDict[str, None]] = {}
+        self.vibration_counters = {
+            "received": 0, "duplicates": 0, "rejected": 0,
+            "baseline_eligible": 0, "baseline_excluded": 0, "database_writes": 0,
+        }
 
-    def _session_for(self, device_id: str, uptime: int | None) -> str:
+    def _session_for(self, device_id: str, uptime: int | None, received_at):
         current = self._sessions.get(device_id)
         if current is None or uptime is not None and current[1] is not None and uptime < current[1]:
-            current = (uuid4().hex, uptime)
+            boot_time = received_at - timedelta(milliseconds=uptime) if uptime is not None else None
+            current = (uuid4().hex, uptime, boot_time)
         elif uptime is not None:
-            current = (current[0], uptime)
+            current = (current[0], uptime, current[2])
         self._sessions[device_id] = current
-        return current[0]
+        measured_at = current[2] + timedelta(milliseconds=uptime) if uptime is not None and current[2] is not None else None
+        return current[0], measured_at
 
-    def _is_duplicate(self, device_id: str, payload, payload_bytes: bytes) -> bool:
+    def _dedupe_key(self, payload, payload_bytes: bytes) -> str:
         if payload.sequence_number is not None:
-            key = f"s:{payload.sequence_number}"
-        else:
-            digest = hashlib.blake2s(payload_bytes, digest_size=8).hexdigest()
-            key = f"u:{payload.device_uptime_ms}:{digest}"
+            return f"{payload.record_type}:s:{payload.sequence_number}"
+        digest = hashlib.blake2s(payload_bytes, digest_size=8).hexdigest()
+        return f"u:{payload.device_uptime_ms}:{digest}"
+
+    def _is_duplicate(self, device_id: str, key: str) -> bool:
         cache = self._dedupe.setdefault(device_id, OrderedDict())
-        if key in cache:
-            return True
+        return key in cache
+
+    def _remember(self, device_id: str, key: str) -> None:
+        cache = self._dedupe.setdefault(device_id, OrderedDict())
         cache[key] = None
         while len(cache) > 256:
             cache.popitem(last=False)
-        return False
 
     async def ingest(self, registered_device_id: str, data: bytes | bytearray | str) -> list[Reading]:
         payload_bytes = data.encode() if isinstance(data, str) else bytes(data)
         payload = parse_telemetry(payload_bytes, max_payload_bytes=self.max_payload_bytes)
         if payload.device_id is not None and payload.device_id != registered_device_id:
             raise ValueError("telemetry device_id does not match the registered device")
-        if self._is_duplicate(registered_device_id, payload, payload_bytes):
+        dedupe_key = self._dedupe_key(payload, payload_bytes)
+        if self._is_duplicate(registered_device_id, dedupe_key):
+            if payload.record_type == "vibration":
+                self.vibration_counters["duplicates"] += 1
             return []
         encoded_original = json.dumps(payload.original_payload, separators=(",", ":"), allow_nan=False)
         if len(encoded_original.encode()) > self.max_payload_json_bytes:
             raise ValueError("validated diagnostic payload exceeds storage maximum")
-        with self.session_factory() as session:
-            devices = DeviceRepository(session)
-            device = devices.get(registered_device_id)
-            if device is None:
-                raise ValueError("registered device no longer exists")
-            session_id = self._session_for(registered_device_id, payload.device_uptime_ms)
-            capabilities = NodeCapabilityService(devices).get(registered_device_id)
-            interface_channels = {item.interface_id: set(item.telemetry_channels) for item in capabilities.interfaces}
-            active_installations = [
-                item for item in InstallationRepository(session).list() if item.node_id == registered_device_id and item.enabled
-            ]
-            channel_installations = {
-                channel: installation.installation_id
-                for installation in active_installations
-                for channel in interface_channels.get(installation.interface_id, set())
-            }
-            channels = payload.channels or {payload.event or payload.record_type: None}
-            rows: list[Reading] = []
-            for name, channel in channels.items():
-                value = channel.value if channel is not None else None
-                numeric = float(value) if isinstance(value, (int, float, bool)) else None
-                raw = channel.raw_value if channel is not None else None
-                rows.append(
-                    Reading(
-                        registered_device_id=device.id,
-                        received_at=payload.received_at,
-                        measured_at_device_uptime=payload.device_uptime_ms,
-                        device_uptime_ms=payload.device_uptime_ms,
-                        sequence_number=payload.sequence_number,
-                        session_id=session_id,
-                        record_type=payload.record_type,
-                        channel=name,
-                        raw_value=float(raw) if raw is not None else None,
-                        normalized_value=numeric,
-                        unit=channel.unit if channel else None,
-                        quality=channel.quality if channel else "good",
-                        payload_json=encoded_original,
-                        delayed=payload.delayed,
-                        installation_id=channel_installations.get(name),
-                    )
+        session_id, measured_at = self._session_for(registered_device_id, payload.device_uptime_ms, payload.received_at)
+        if payload.record_type == "vibration":
+            self.vibration_counters["received"] += 1
+            if payload.vibration is None:
+                self.vibration_counters["rejected"] += 1
+                raise ValueError("vibration message has no validated summary")
+            try:
+                result = await asyncio.to_thread(
+                    self.vibration.process, registered_device_id, payload.vibration,
+                    session_id=session_id, observed_at=payload.received_at,
                 )
-            ReadingRepository(session).add_many(rows)
-            installation_repository = InstallationRepository(session)
-            for installation in active_installations:
-                relevant = [row for row in rows if row.installation_id == installation.installation_id]
-                if relevant:
-                    valid = any(row.quality not in {"invalid", "sensor_fault", "stale"} for row in relevant)
-                    installation_repository.update(
-                        installation,
-                        last_seen_at=payload.received_at,
-                        **({"last_valid_reading_at": payload.received_at} if valid else {}),
-                    )
-            devices.update_runtime(device, status="connected", last_seen_at=utc_now())
+            except Exception:
+                self.vibration_counters["rejected"] += 1
+                logger.exception(
+                    "Vibration window was not processed for node=%s sequence=%s",
+                    registered_device_id, payload.vibration.window_sequence,
+                )
+                raise
+            eligibility_key = "baseline_eligible" if payload.vibration.validity == "valid" else "baseline_excluded"
+            self.vibration_counters[eligibility_key] += 1
+            if result.get("persisted"):
+                self.vibration_counters["database_writes"] += 1
+            self._remember(registered_device_id, dedupe_key)
+            await self.websocket_manager.broadcast("telemetry", registered_device_id, {
+                "schema_version": payload.schema_version, "record_type": "vibration",
+                "vibration": payload.vibration.model_dump(mode="json"), "condition": result,
+            })
+            return []
+        try:
+            rows = await asyncio.to_thread(
+                self.persistence.persist,
+                registered_device_id,
+                payload,
+                session_id=session_id,
+                measured_at=measured_at,
+                encoded_original=encoded_original,
+            )
+        except TelemetryPersistenceError:
+            logger.exception("Telemetry packet was not persisted for node=%s", registered_device_id)
+            raise
+        self._remember(registered_device_id, dedupe_key)
         await self.websocket_manager.broadcast(
             "telemetry",
             registered_device_id,

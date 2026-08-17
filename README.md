@@ -4,7 +4,9 @@ This repository contains firmware for Seeed Studio XIAO MG24 Sense sensor nodes,
 
 Finished sensor products are shipped with production firmware and an unassigned commissioning state. The local dashboard can assign their permanent `node_id`, persist supported configuration over BLE, read it back, and activate an installation only after live telemetry is verified. A blank development board still needs USB, but the loopback-only dashboard firmware service installs only a hash-verified application package selected by hardware serial; it accepts neither paths nor uploader arguments from the browser.
 
-Identity and operational configuration use separate redundant NVM3 records. Ordinary BLE onboarding is write-once for identity. Only the USB recovery protocol exposes allowlisted `configuration_only` and `application_factory` reset scopes; neither is a chip erase. See `sensor_package/docs/device-identity.md`.
+Identity and operational configuration use separate redundant NVM3 records. Ordinary BLE onboarding is write-once for identity. Only the USB recovery protocol exposes the allowlisted `application_factory` reset scope; it is not a chip erase. See `sensor_package/docs/device-identity.md`.
+
+Gateway removal, explicit restoration, and physical factory reset are distinct workflows. Removal preserves telemetry and device firmware/configuration; factory reset is USB-only and preserves telemetry, firmware, hardware identity, and platform storage. See [`docs/sensor-lifecycle.md`](docs/sensor-lifecycle.md).
 
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 
@@ -27,6 +29,8 @@ flowchart LR
 ```
 
 The MG24 owns time-sensitive acquisition, filtering, configured calibration hooks, feature calculation, immediate state transitions, telemetry scheduling, sequence numbers, device uptime, and short bounded buffering. The Raspberry Pi owns registration, BLE lifecycle management, authoritative history, presentation, alarm acknowledgement in a future phase, and longer-term analysis.
+
+SQLite remains the authoritative edge store and PostgreSQL is not required on the Raspberry Pi. The schema now carries durable gateway and reading identities for a future, optional SQLite-to-central-PostgreSQL synchronization service; central availability will never be part of the local acquisition path. Configuration, retention, timestamp semantics, backup guidance, and current-rate storage estimates are documented in [gateway/README.md](gateway/README.md#sensor-data-storage).
 
 ## Equipment identity
 
@@ -152,6 +156,18 @@ cp .env.example .env
 python -m gateway
 ```
 
+Windows PowerShell development uses the same repository-local environment without activation:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r gateway\requirements.txt
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe -m gateway
+```
+
+Open `http://127.0.0.1:8000`. The normal application entry point is `python -m gateway` (or
+`gateway\__main__.py`); `gateway\app\main.py` defines the FastAPI application and is not the preferred launcher.
+
 The configured default is `0.0.0.0:8000`. Another WAP client can normally open:
 
 ```text
@@ -184,6 +200,23 @@ The SQLite database defaults to `/opt/seed-mg24/data/seed_mg24.db` under systemd
 
 The dashboard shows both names, live state, last seen time, RSSI, battery, and latest channels. Open details to rename the display name, update location/description, reconnect, or send allowlisted commands. Deleting through the API archives and disables the device; history is retained.
 
+Permanent equipment IDs use uppercase letters, digits, and single hyphen-separated segments, for example
+`AU-VS-M-0001`. Editable display names may use friendlier text. Changing a permanent ID requires **Reset and
+Re-register**; changing only the display name, location, or description does not.
+
+### Reset and re-register recovery
+
+The guided dashboard workflow binds the operation to the immutable USB hardware ID, creates an allowlisted backup,
+performs the application-only reset after explicit confirmation, verifies the unprovisioned state over USB, and then
+matches the same physical board over BLE using a read-only derived onboarding identity. RSSI and the BLE address are
+informational and never substitute for the identity match.
+
+Recovery operations are durable and safe to resume after a gateway restart. USB reconciliation is read-only and does
+not repeat a factory-reset command. If BLE provisioning completed but gateway registration was interrupted, **Continue
+Gateway Registration** verifies the already-written identity/configuration and resumes only the database registration
+step. During the bounded onboarding scan, managed reconnect loops are paused and restored so Windows BLE discovery is
+not starved by connections to missing devices.
+
 ## API
 
 - `GET /api/health`
@@ -211,17 +244,24 @@ History is paginated and constrained by configured page and date-range maxima. A
 
 ## Firmware identity and flashing
 
-Before flashing each physical node, set a permanent identifier. The simplest phase-one method is a compiler definition:
+Production/development firmware is built with `UNASSIGNED-MG24`; the dashboard assigns the permanent identity only
+after an exact USB/BLE physical-device match. Build the application with:
 
 ```bash
 arduino-cli compile --fqbn SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs \
-  --build-property 'compiler.cpp.extra_flags=-DDEVICE_ID=\"ARM2001-01\"' \
+  --build-path sensor_package/build \
   sensor_package/firmware/xiao_mg24_sensor_node
 arduino-cli upload -p /dev/ttyACM0 --fqbn SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs \
-  sensor_package/firmware/xiao_mg24_sensor_node
+  --input-dir sensor_package/build sensor_package/firmware/xiao_mg24_sensor_node
 ```
 
-Alternatively edit the `DEVICE_ID` definition in `sensor_config.h` for a controlled board-specific build. Never deploy the default `UNASSIGNED-MG24` to multiple boards. The ID is fixed across reboots; firmware never generates a random identity.
+On Windows, `sensor_package\scripts\compile.ps1` and `flash.ps1 -Port COM10` provide the equivalent pinned workflow.
+Set `SEED_MG24_ARDUINO_CLI` to the absolute executable path when `arduino-cli` is not on the gateway process `PATH`.
+
+The dashboard firmware catalog normally requires the artifact size and SHA-256 recorded in the package manifest. On a
+development workstation only, set `SEED_MG24_DEVELOPER_FIRMWARE_APPROVAL=true`; a loopback dashboard session may then
+explicitly approve the fixed local build artifact until the gateway restarts. This does not accept a browser-supplied
+path, command, port, or uploader argument.
 
 Install the Silicon Labs core and current firmware libraries first:
 
@@ -240,7 +280,12 @@ Telemetry: 0200004d-4724-2480-2d4d-47240024beef
 Command:   0300004d-4724-2480-2d4d-47240024beef
 Metadata:  0400004d-4724-2480-2d4d-47240024beef
 Capabilities: 0500004d-4724-2480-2d4d-47240024beef
+Onboarding identity: 0600004d-4724-2480-2d4d-47240024beef
 ```
+
+The onboarding identity characteristic is read-only, is not advertised, and exposes the derived identity only while
+the node is unprovisioned/recovering. Firmware computes SHA-256 locally so this safety match does not depend on optional
+crypto components in a particular Silicon Labs Arduino-core build.
 
 Metadata includes `device_id`, firmware version, schema version, and device type. Identity is not repeated in the backward-compatible recurring compact packet, keeping that packet bounded; new processed/event/heartbeat messages include identity.
 

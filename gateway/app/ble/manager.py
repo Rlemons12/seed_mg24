@@ -1,6 +1,7 @@
 import asyncio
 import re
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 
 from gateway.app.ble.connection import DeviceConnection
 from gateway.app.config import Settings
@@ -24,6 +25,7 @@ class BleManager:
         self.client_factory = client_factory
         self.connections: dict[str, DeviceConnection] = {}
         self.semaphore = asyncio.Semaphore(settings.max_connection_attempts)
+        self._pause_lock = asyncio.Lock()
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
         existing = self.connections.get(device_id)
@@ -61,6 +63,19 @@ class BleManager:
         connection = self.connections.pop(device_id, None)
         if connection:
             await connection.stop()
+
+    @asynccontextmanager
+    async def paused_connections(self):
+        """Temporarily stop managed reconnect loops during exclusive BLE work."""
+        async with self._pause_lock:
+            scheduled = [(device_id, connection.address) for device_id, connection in self.connections.items()]
+            for device_id, _address in scheduled:
+                await self.remove(device_id)
+            try:
+                yield
+            finally:
+                for device_id, address in scheduled:
+                    self.schedule(device_id, address)
 
     async def command(self, device_id: str, command: str) -> str:
         normalized = validate_command(command)

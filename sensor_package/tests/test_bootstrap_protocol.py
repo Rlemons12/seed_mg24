@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pytest
 
-from sensor_package.tools.bootstrap.protocol import ProtocolError, content_hash, decode_response, encode_request, validate_backup
+from sensor_package.tools.bootstrap.protocol import (
+    HARDWARE_ID_PATTERN,
+    ProtocolError,
+    content_hash,
+    decode_response,
+    encode_request,
+    validate_backup,
+)
 
 
 def test_request_is_bounded_and_correlated():
@@ -24,6 +31,17 @@ def test_unknown_action_and_oversize_rejected():
         encode_request("x", "arbitrary_nvm_write")
     with pytest.raises(ProtocolError):
         encode_request("x", "restore_configuration", junk="x" * 800)
+
+
+def test_destructive_confirmation_uses_bounded_compact_wire_frame():
+    line = encode_request(
+        "a" * 16, "confirm_factory_reset", reset_protocol_version=2, scope="application_factory",
+        expected_hardware_id="0x0123456789ABCDEF", operation_id="b" * 32, challenge="c" * 32,
+    )
+    assert len(line) <= 256
+    assert b'"a":"confirm_factory_reset"' in line
+    assert b'"h":"0x0123456789ABCDEF"' in line
+    assert b'"op":"' in line and b'"c":"' in line
 
 
 def test_backup_hash_validation():
@@ -56,3 +74,9 @@ def test_bootstrap_schema_action_and_version_constraints_match_fixtures():
     assert json.loads((fixtures / "bootstrap_read_request.json").read_text())["action"] in allowed
     assert json.loads((fixtures / "bootstrap_unknown_action.json").read_text())["action"] not in allowed
     assert json.loads((fixtures / "bootstrap_unsupported_version.json").read_text())["schema_version"] != 1
+    prepare = json.loads((fixtures / "bootstrap_reset_prepare.json").read_text())
+    confirm = json.loads((fixtures / "bootstrap_reset_confirm.json").read_text())
+    assert prepare["reset_protocol_version"] == confirm["reset_protocol_version"] == 2
+    assert HARDWARE_ID_PATTERN.fullmatch(prepare["expected_hardware_id"])
+    assert confirm["expected_hardware_id"] == prepare["expected_hardware_id"]
+    assert len(confirm["operation_id"]) == len(confirm["challenge"]) == 32

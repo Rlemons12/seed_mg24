@@ -13,7 +13,8 @@ static SlotIdentity read_identity(NvmBackend& b,uint32_t key){
 }
 bool NodeIdentityStore::valid_node_id(const char* s){ if(!s)return false; size_t n=strlen(s); if(n==0||n>kNodeIdMaxLength||s[0]=='-'||s[n-1]=='-')return false; for(size_t i=0;i<n;i++){char c=s[i];if(!((c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-')||(c=='-'&&i&&s[i-1]=='-'))return false;}return true; }
 StoreStatus NodeIdentityStore::load(NodeIdentity* out) const{
-  if(!out)return StoreStatus::InvalidArgument; SlotIdentity a=read_identity(backend_,ApplicationNvmKeys::kIdentitySlotA),b=read_identity(backend_,ApplicationNvmKeys::kIdentitySlotB);
+  if(!out)return StoreStatus::InvalidArgument;
+  SlotIdentity a=read_identity(backend_,ApplicationNvmKeys::kIdentitySlotA),b=read_identity(backend_,ApplicationNvmKeys::kIdentitySlotB);
   bool av=a.status==StoreStatus::Ok,bv=b.status==StoreStatus::Ok; if(!av&&!bv){if(a.status==StoreStatus::NotFound&&b.status==StoreStatus::NotFound)return StoreStatus::Unprovisioned;return StoreStatus::Corrupt;}
   if(av&&bv&&!generation_newer(a.value.generation,b.value.generation)&&!generation_newer(b.value.generation,a.value.generation)&&a.value.generation==b.value.generation)return StoreStatus::GenerationConflict;
   *out=(bv&&(!av||generation_newer(b.value.generation,a.value.generation)))?b.value:a.value;
@@ -21,7 +22,8 @@ StoreStatus NodeIdentityStore::load(NodeIdentity* out) const{
   return (av?b.status:a.status)==StoreStatus::NotFound?StoreStatus::Ok:StoreStatus::RecoveredFromPrevious;
 }
 StoreStatus NodeIdentityStore::provision(const char* id,NodeIdentity* out){
-  if(!valid_node_id(id)||!out)return StoreStatus::InvalidArgument; NodeIdentity current={}; StoreStatus old=load(&current); if(old==StoreStatus::Ok||old==StoreStatus::RecoveredFromPrevious)return StoreStatus::InvalidArgument; if(old!=StoreStatus::Unprovisioned)return old;
+  if(!valid_node_id(id)||!out)return StoreStatus::InvalidArgument;
+  NodeIdentity current={}; StoreStatus old=load(&current); if(old==StoreStatus::Ok||old==StoreStatus::RecoveredFromPrevious)return StoreStatus::InvalidArgument; if(old!=StoreStatus::Unprovisioned)return old;
   uint8_t payload[4+kNodeIdMaxLength]; size_t len=strlen(id); payload[0]=1;payload[1]=0;payload[2]=(uint8_t)ProvisioningState::Provisioned;payload[3]=(uint8_t)len;memcpy(payload+4,id,len);
   uint8_t record[kPersistentMaxRecord];size_t n=0;StoreStatus s=encode_persistent_record(PersistentRecordType::Identity,1,0,payload,(uint16_t)(4+len),record,sizeof(record),&n);if(s!=StoreStatus::Ok)return s;
   s=backend_.write(ApplicationNvmKeys::kIdentitySlotA,record,n);if(s!=StoreStatus::Ok)return s; SlotIdentity verify=read_identity(backend_,ApplicationNvmKeys::kIdentitySlotA);if(verify.status!=StoreStatus::Ok||strcmp(verify.value.node_id,id))return StoreStatus::ReadbackFailed;

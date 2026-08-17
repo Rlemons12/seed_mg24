@@ -8,17 +8,23 @@
 .mg-shell button:hover:not(:disabled) { border-color: var(--mg-accent); }
 .mg-shell button:disabled { cursor: not-allowed; opacity: .48; }
 .mg-shell button.primary { color: var(--mg-on-accent); background: var(--mg-accent); border-color: var(--mg-accent); }
+.mg-shell button.danger { color: #fff; background: #b42318; border-color: #b42318; }
 .mg-shell button.quiet { border-color: transparent; background: transparent; }
 .mg-shell .status-chip { display: inline-flex; align-items: center; width: max-content; padding: .42rem .7rem; border: 1px solid var(--mg-border); border-radius: 999px; color: var(--mg-success); background: var(--mg-surface); font-size: .78rem; font-weight: 800; }
 .mg-shell .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr)); align-items: start; gap: 1rem; }
-.mg-shell #node-list { grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 22rem)); justify-content: start; }
-.mg-shell .mg-module-sensor-card { min-width: 0; height: 3.5rem; overflow: clip; color: var(--mg-text); background: var(--mg-surface); border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); box-shadow: var(--mg-shadow); }
+.mg-shell #node-list { grid-template-columns: minmax(0, 1fr); }
+.mg-shell .mg-module-sensor-card { min-width: 0; height: 4.25rem; overflow: clip; color: var(--mg-text); background: var(--mg-surface); border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); box-shadow: var(--mg-shadow); }
 .mg-shell .mg-module-sensor-card:has(.mg-module-sensor-card__toggle[aria-expanded="true"]) { grid-column: 1 / -1; height: auto; }
 .mg-shell .mg-module-sensor-card__heading { margin: 0; font-size: 1rem; }
-.mg-shell .mg-module-sensor-card__toggle { width: 100%; height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .75rem 1rem; border: 0; border-radius: 0; text-align: left; }
+.mg-shell .mg-module-sensor-card__toggle { width: 100%; min-height: 4.25rem; display: grid; grid-template-columns: minmax(10rem, 1fr) auto auto; align-items: center; gap: 1rem; padding: .65rem 1rem; border: 0; border-radius: 0; text-align: left; }
 .mg-shell .mg-module-sensor-card__toggle:hover { background: color-mix(in srgb, var(--mg-surface) 91%, var(--mg-accent)); }
 .mg-shell .mg-module-sensor-card__toggle:focus-visible { position: relative; z-index: 1; outline-offset: -4px; }
 .mg-shell .mg-module-sensor-card__name { min-width: 0; overflow-wrap: anywhere; font-weight: 800; }
+.mg-shell .sensor-summary__identity { display: grid; min-width: 0; gap: .12rem; }
+.mg-shell .sensor-summary__identity small { font-size: .68rem; }
+.mg-shell .sensor-summary__status { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .55rem 1rem; color: var(--mg-muted); font-size: .76rem; font-weight: 650; }
+.mg-shell .sensor-summary__condition { font-size: .72rem; }
+.mg-shell .sensor-summary__battery { color: var(--mg-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mg-shell .mg-module-sensor-card__chevron { width: .65rem; height: .65rem; flex: 0 0 auto; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .16s ease; }
 .mg-shell .mg-module-sensor-card__toggle[aria-expanded="true"] .mg-module-sensor-card__chevron { transform: rotate(225deg); }
 .mg-shell .mg-module-sensor-card__details { padding: 1.1rem; border-top: 1px solid var(--mg-border); }
@@ -27,6 +33,16 @@
 .mg-shell .mg-module-sensor-card__details dt { color: var(--mg-muted); }
 .mg-shell .mg-module-sensor-card__details dd { margin: 0; text-align: right; }
 .mg-shell .live-input-grid { grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); margin-bottom: 1rem; }
+.mg-shell .live-input-grid--compact { grid-template-columns: repeat(6, minmax(7rem, 1fr)); }
+.mg-shell .live-input-grid--compact .channel { padding: .55rem .65rem; }
+.mg-shell .sensor-tabs { position: sticky; z-index: 5; top: 0; display: flex; gap: .35rem; margin: -1.1rem -1.1rem 1rem; padding: .65rem 1.1rem; overflow-x: auto; border-bottom: 1px solid var(--mg-border); background: var(--mg-surface); }
+.mg-shell .sensor-tab { flex: 0 0 auto; padding: .48rem .7rem; }
+.mg-shell .sensor-tab[aria-selected="true"] { color: var(--mg-on-accent); background: var(--mg-accent); border-color: var(--mg-accent); }
+.mg-shell .sensor-tab-panel { min-height: 10rem; }
+.mg-shell .sensor-tab-panel > h4:first-child { margin-top: 0; }
+.mg-shell .sensor-tab-panel[hidden] { display: none; }
+.mg-shell .device-info-grid { max-width: 48rem; }
+.mg-shell .sensor-tab-panel .vibration-panel-header { margin-top: 0; padding-top: 0; border-top: 0; }
 .mg-shell .device-card, .mg-shell .panel, .mg-shell dialog { color: var(--mg-text); background: var(--mg-surface); border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); box-shadow: var(--mg-shadow); }
 .mg-shell .device-card { padding: 1.2rem; }
 .mg-shell .device-card h3 { margin-bottom: .2rem; }
@@ -64,14 +80,104 @@
 .mg-shell .summary { padding: .75rem; border-left: 4px solid var(--mg-accent); background: color-mix(in srgb, var(--mg-surface) 88%, var(--mg-accent)); white-space: pre-wrap; }
 .mg-shell .warning { font-weight: 650; }
 .mg-shell #notice { min-height: 1.75rem; padding-top: .5rem; font-weight: 650; }
+.mg-shell .workflow-stepper { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .4rem; padding: 0; list-style: none; }
+.mg-shell .workflow-stepper li { padding: .55rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-muted); font-size: .78rem; }
+.mg-shell .workflow-stepper li.current { border-color: var(--mg-accent); color: var(--mg-text); font-weight: 800; }
+.mg-shell .workflow-stepper li.complete { color: var(--mg-success); }
+.mg-shell .workflow-stepper li.failed { border-color: #b42318; color: #b42318; }
+.mg-shell .workflow-progress { min-height: 1.5rem; }
+.mg-shell .vibration-panel-header { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--mg-border); }
+.mg-shell .vibration-panel-header h4 { margin-bottom: .25rem; }
+.mg-shell .vibration-controls { display: flex; align-items: end; gap: .55rem; }
+.mg-shell .vibration-controls label { display: grid; gap: .25rem; color: var(--mg-muted); font-size: .78rem; }
+.mg-shell .vibration-monitoring { display: grid; gap: 1rem; margin: 1rem 0 1.25rem; }
+.mg-shell .condition-overview, .mg-shell .vibration-section { padding: 1rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-md); background: color-mix(in srgb, var(--mg-surface) 96%, var(--mg-accent)); }
+.mg-shell .condition-overview__heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.mg-shell .condition-disclosure { max-width: 28rem; color: var(--mg-muted); font-size: .82rem; font-weight: 700; text-align: right; }
+.mg-shell .condition-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .65rem; margin-top: .9rem; }
+.mg-shell .condition-stat { min-width: 0; padding: .8rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); background: var(--mg-surface); }
+.mg-shell .condition-stat > span, .mg-shell .condition-stat > strong, .mg-shell .condition-stat > small { display: block; }
+.mg-shell .condition-stat > span { color: var(--mg-muted); font-size: .75rem; font-weight: 750; }
+.mg-shell .condition-stat > strong { margin: .28rem 0; overflow-wrap: anywhere; font-size: 1rem; }
+.mg-shell .condition-stat > small { color: var(--mg-muted); line-height: 1.35; }
+.mg-shell .condition-state { width: max-content; max-width: 100%; padding: .25rem .45rem; border-radius: .35rem; }
+.mg-shell .condition-state--normal { color: var(--mg-success); background: color-mix(in srgb, var(--mg-surface) 80%, var(--mg-success)); }
+.mg-shell .condition-state--baseline-pending, .mg-shell .condition-state--insufficient-data { color: var(--mg-accent); background: color-mix(in srgb, var(--mg-surface) 82%, var(--mg-accent)); }
+.mg-shell .condition-state--elevated { color: #a96209; background: color-mix(in srgb, var(--mg-surface) 82%, #d99b42); }
+.mg-shell .condition-state--significant-change, .mg-shell .condition-state--invalid { color: #b42318; background: color-mix(in srgb, var(--mg-surface) 82%, #d96b61); }
+.mg-shell .condition-learning { margin: .9rem 0 .35rem; font-weight: 750; }
+.mg-shell .condition-overview progress { width: 100%; accent-color: var(--mg-accent); }
+.mg-shell .axis-tabs { display: flex; gap: .35rem; margin-bottom: .75rem; }
+.mg-shell .axis-tabs button[aria-selected="true"] { color: var(--mg-on-accent); background: var(--mg-accent); border-color: var(--mg-accent); }
+.mg-shell .vibration-table-wrap { overflow-x: auto; }
+.mg-shell .vibration-comparison { width: 100%; min-width: 35rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.mg-shell .vibration-comparison th, .mg-shell .vibration-comparison td { padding: .55rem; border-bottom: 1px solid var(--mg-border); text-align: right; }
+.mg-shell .vibration-comparison th:first-child, .mg-shell .vibration-comparison td:first-child { text-align: left; }
+.mg-shell .condition-factors { margin-bottom: 0; padding-left: 1.25rem; }
+.mg-shell .condition-factors li + li { margin-top: .45rem; }
+.mg-shell .vibration-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.mg-shell .vibration-chart { min-width: 0; margin: 0; padding: .75rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); background: var(--mg-surface); }
+.mg-shell .vibration-chart figcaption strong, .mg-shell .vibration-chart__help { display: block; }
+.mg-shell .vibration-chart__help { min-height: 2.5em; margin-top: .2rem; color: var(--mg-muted); font-size: .75rem; }
+.mg-shell .vibration-chart svg { display: block; width: 100%; height: auto; margin-top: .5rem; overflow: visible; }
+.mg-shell .vibration-chart svg text { fill: var(--mg-muted); font-size: 10px; }
+.mg-shell .vibration-chart__grid { stroke: var(--mg-border); stroke-width: 1; }
+.mg-shell .vibration-chart__line { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.mg-shell .vibration-chart__baseline { stroke-width: 1; stroke-dasharray: 5 4; opacity: .65; }
+.mg-shell .vibration-chart__axis-x { stroke: #2774ae; color: #2774ae; }
+.mg-shell .vibration-chart__axis-y { stroke: #a96209; color: #a96209; }
+.mg-shell .vibration-chart__axis-z { stroke: #598c35; color: #598c35; }
+.mg-shell .vibration-chart__legend { display: flex; flex-wrap: wrap; gap: .7rem; color: var(--mg-muted); font-size: .72rem; }
+.mg-shell .vibration-chart__key::before { display: inline-block; width: .8rem; margin-right: .25rem; border-top: 2px solid currentColor; content: ""; vertical-align: middle; }
+.mg-shell .vibration-chart__baseline-key::before { display: inline-block; width: .8rem; margin-right: .25rem; border-top: 1px dashed currentColor; content: ""; vertical-align: middle; }
+.mg-shell .vibration-secondary > summary { cursor: pointer; font-weight: 800; }
+.mg-shell .vibration-secondary[open] > summary { margin-bottom: .85rem; }
+.mg-shell .baseline-details dl { display: grid; grid-template-columns: repeat(2, auto 1fr); gap: .45rem .75rem; }
+.mg-shell .baseline-details dt { color: var(--mg-muted); }
+.mg-shell .baseline-details dd { margin: 0; font-weight: 700; }
+.mg-shell .baseline-actions { display: flex; align-items: center; gap: .35rem; margin-top: 1rem; }
+.mg-shell .baseline-history { margin-top: 1rem; }
+.mg-shell .baseline-history summary { cursor: pointer; font-weight: 700; }
+.mg-shell .baseline-history ol { display: grid; gap: .35rem; padding-left: 1.4rem; }
+.baseline-relearn-dialog { width: min(34rem, calc(100vw - 2rem)); padding: 0; border: 1px solid var(--mg-border, #ccd3d5); border-radius: .75rem; color: var(--mg-text, #172126); background: var(--mg-surface, #fff); }
+.baseline-relearn-dialog::backdrop { background: rgb(0 0 0 / 52%); }
+.baseline-relearn-dialog form { display: grid; gap: 1rem; padding: 1.25rem; }
+.baseline-relearn-dialog h3, .baseline-relearn-dialog p { margin: 0; }
+.baseline-relearn-dialog label { display: grid; gap: .35rem; font-weight: 700; }
+.baseline-relearn-dialog input, .baseline-relearn-dialog textarea { width: 100%; box-sizing: border-box; }
+.baseline-relearn-dialog__actions { display: flex; justify-content: flex-end; gap: .65rem; }
+.mg-shell .vibration-empty, .mg-shell .vibration-invalid, .mg-shell .vibration-loading { padding: 1rem; border: 1px dashed var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-muted); }
+.mg-shell .vibration-invalid { border-color: #d8ad72; color: #8a5205; }
+.mg-shell .metric-label { display: inline-flex; align-items: center; gap: .3rem; }
+.mg-shell .metric-help { position: relative; display: inline-flex; font-weight: 400; text-align: left; }
+.mg-shell .metric-help__trigger { display: inline-grid; width: 1.75rem; min-width: 1.75rem; height: 1.75rem; padding: 0; place-items: center; border: 0; border-radius: 50%; color: var(--mg-accent); background: transparent; font-size: 1rem; line-height: 1; cursor: help; }
+.mg-shell .metric-help__trigger:hover, .mg-shell .metric-help__trigger:focus-visible { outline: 2px solid var(--mg-accent); outline-offset: 1px; background: color-mix(in srgb, var(--mg-surface) 80%, var(--mg-accent)); }
+.mg-shell .metric-help__popover { position: absolute; z-index: 30; top: calc(100% + .35rem); left: 0; display: none; width: min(22rem, calc(100vw - 2rem)); max-height: min(24rem, calc(100vh - 3rem)); padding: .8rem; overflow: auto; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); box-shadow: 0 .5rem 1.5rem rgb(0 0 0 / 18%); color: var(--mg-text); background: var(--mg-surface); font-size: .8rem; font-weight: 400; line-height: 1.4; white-space: normal; }
+.mg-shell .metric-help__popover strong, .mg-shell .metric-help__popover span { display: block; }
+.mg-shell .metric-help__popover strong:not(:first-child) { margin-top: .55rem; }
+.mg-shell .metric-help:hover .metric-help__popover, .mg-shell .metric-help:focus-within .metric-help__popover, .mg-shell .metric-help.is-open .metric-help__popover { display: block; }
+.mg-shell .vibration-comparison td:first-child .metric-help__popover { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); }
 
 @media (max-width: 650px) {
   .mg-shell .panel-header { align-items: stretch; flex-direction: column; }
   .mg-shell .form-grid { grid-template-columns: 1fr; }
   .mg-shell .wide { grid-column: auto; }
   .mg-shell #node-list { grid-template-columns: minmax(0, 1fr); }
+  .mg-shell .mg-module-sensor-card { height: auto; min-height: 4.25rem; }
+  .mg-shell .mg-module-sensor-card:not(:has(.mg-module-sensor-card__toggle[aria-expanded="true"])) .mg-module-sensor-card__details { display: none; }
+  .mg-shell .mg-module-sensor-card__toggle { grid-template-columns: 1fr auto; }
+  .mg-shell .sensor-summary__status { grid-column: 1 / -1; justify-content: flex-start; }
+  .mg-shell .mg-module-sensor-card__chevron { grid-column: 2; grid-row: 1; }
   .mg-shell .mg-module-sensor-card__details dl { grid-template-columns: 1fr; gap: .15rem; }
   .mg-shell .mg-module-sensor-card__details dd { margin-bottom: .5rem; text-align: left; }
+  .mg-shell .vibration-panel-header, .mg-shell .condition-overview__heading { align-items: stretch; flex-direction: column; }
+  .mg-shell .condition-disclosure { text-align: left; }
+  .mg-shell .condition-stat-grid, .mg-shell .vibration-chart-grid { grid-template-columns: 1fr; }
+  .mg-shell .live-input-grid--compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mg-shell .vibration-controls { align-items: stretch; flex-direction: column; }
+  .mg-shell .baseline-details dl { grid-template-columns: 1fr; gap: .15rem; }
+  .mg-shell .baseline-details dd { margin-bottom: .45rem; }
+  .mg-shell .metric-help__popover { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(22rem, calc(100vw - 2rem)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

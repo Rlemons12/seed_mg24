@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 from typing import Any
 
 from .protocol import PREFIX, ProtocolError, decode_response, encode_request
@@ -15,6 +16,16 @@ class BootstrapSerialClient:
         except ImportError as exc:
             raise RuntimeError("pyserial is required: python -m pip install pyserial") from exc
         self._serial = serial.Serial(port=port, baudrate=baudrate, timeout=timeout, write_timeout=timeout)
+        # Native USB CDC can report the port open before the firmware endpoint
+        # has completed its host-open transition, especially on Windows.
+        time.sleep(0.35)
+        # A host disconnect can leave an incomplete line in the firmware's
+        # static USB parser. Terminate that stale frame, then discard its
+        # expected error/telemetry before beginning a correlated transaction.
+        self._serial.write(b"\n")
+        self._serial.flush()
+        time.sleep(0.05)
+        self._serial.reset_input_buffer()
 
     def close(self) -> None:
         self._serial.close()

@@ -55,6 +55,40 @@ def dashboard_page():
             if request.request.method == "POST" and path.endswith("/api/commissioning/nodes"):
                 posts.append(json.loads(request.request.post_data or "{}"))
                 request.fulfill(status=200, content_type="application/json", body=json.dumps({"device_id": "MG24-TEST"}))
+            elif request.request.method == "POST" and path.endswith("/api/reset-reregister/start"):
+                posts.append({"workflow_start": json.loads(request.request.post_data or "{}")})
+                identity_mode = any(row.get("identity_ui") for row in posts)
+                request.fulfill(status=200, content_type="application/json", body=json.dumps({
+                    "operation_id":"0123456789abcdef0123456789abcdef",
+                    "state":"searching_for_reset_sensor_ble" if identity_mode else "usb_connection_required",
+                    "source_record_id":1, "source_device_id":"MG24-0002", "source_display_name":"XIAO MG24 Sense 01",
+                    "hardware_id":"0x0123456789ABCDEF", "source_ble_address":"AA:BB:CC:DD:EE:02",
+                    "selected_port":None, "backup_status":"pending", "registration_choice":None,
+                    "target_device_id":None, "target_display_name":None, "target_location":None,
+                    "target_ble_address":None, "progress":[], "result":{"firmware_version":"0.1.0"}, "error":None,
+                    "started_at":"2026-08-09T00:00:00Z", "updated_at":"2026-08-09T00:00:00Z",
+                }))
+            elif request.request.method == "POST" and path.endswith("/scan-ble"):
+                request.fulfill(status=200, content_type="application/json", body=json.dumps({
+                    "operation_id":"0123456789abcdef0123456789abcdef", "state":"ble_identity_matched",
+                    "source_record_id":1, "source_device_id":"MG24-0002", "source_display_name":"XIAO MG24 Sense 01",
+                    "hardware_id":"0x0123456789ABCDEF", "source_ble_address":"AA:BB:CC:DD:EE:02",
+                    "selected_port":"COM10", "backup_status":"complete", "registration_choice":"restore",
+                    "target_device_id":"MG24-0002", "target_display_name":"XIAO MG24 Sense 01",
+                    "target_location":"Boiler room", "target_ble_address":"AA:BB:CC:DD:EE:20", "progress":[],
+                    "result":{"firmware_version":"0.1.0"}, "error":None,
+                    "started_at":"2026-08-09T00:00:00Z", "updated_at":"2026-08-09T00:00:00Z",
+                    "expected_onboarding_identity_hint":"7e6d1066…54a8", "candidates":[
+                        {"address":"AA:BB:CC:DD:EE:20","name":"XIAO-MG24-Sense","rssi":-61,
+                         "verification_status":"verified_match","label":"Verified physical sensor",
+                         "reason":"BLE identity exactly matches the USB-verified sensor.","provisioning_allowed":True,
+                         "firmware_version":"0.1.0","protocol_version":"1.0.0"},
+                        {"address":"AA:BB:CC:DD:EE:99","name":"XIAO-MG24-Sense","rssi":-18,
+                         "verification_status":"non_match","label":"Different sensor",
+                         "reason":"BLE identity does not match the USB-verified sensor.","provisioning_allowed":False,
+                         "firmware_version":"0.1.0","protocol_version":"1.0.0"}
+                    ]
+                }))
             elif "/static/css/" in path:
                 relative = path.split("/static/", 1)[1]
                 request.fulfill(path=STATIC / relative, content_type="text/css")
@@ -65,6 +99,10 @@ def dashboard_page():
                 request.fulfill(path=STATIC / relative, content_type="application/javascript")
             elif path.endswith("/static/onboarding_state.js"):
                 request.fulfill(path=STATIC / "onboarding_state.js", content_type="application/javascript")
+            elif path.endswith("/static/reset_reregister.js"):
+                request.fulfill(path=STATIC / "reset_reregister.js", content_type="application/javascript")
+            elif path.endswith("/static/vibration_monitoring.js"):
+                request.fulfill(path=STATIC / "vibration_monitoring.js", content_type="application/javascript")
             elif path.endswith("/static/app.js"):
                 request.fulfill(path=STATIC / "app.js", content_type="application/javascript")
             elif path.endswith("/api/nodes"):
@@ -72,7 +110,13 @@ def dashboard_page():
                     "node_id": "MG24-0002", "display_name": "XIAO MG24 Sense 01",
                     "connection_status": "connected", "compatibility_status": "compatible",
                     "firmware_version": "0.1.0", "protocol_version": "1.0.0",
+                    "hardware_id": "0x0123456789ABCDEF", "ble_address": "AA:BB:CC:DD:EE:02",
+                    "lifecycle_state": "active", "factory_reset_status": "not_requested", "location": "Boiler room",
                 }]))
+            elif path.endswith("/api/device-lifecycle/removed"):
+                request.fulfill(status=200, content_type="application/json", body="[]")
+            elif path.endswith("/api/reset-reregister/incomplete"):
+                request.fulfill(status=200, content_type="application/json", body="[]")
             elif path.endswith("/api/devices/MG24-0002/readings/latest"):
                 request.fulfill(status=200, content_type="application/json", body=json.dumps([
                     {"channel": "analog_1", "normalized_value": 415, "unit": "adc_count",
@@ -127,6 +171,38 @@ def assert_no_commissioning_action(page, posts):
     assert posts == []
 
 
+def test_reset_reregister_opens_one_accessible_guided_workflow(dashboard_page):
+    page, posts = dashboard_page
+    page.get_by_role("button", name="Close").click()
+    page.click('[data-node-id="MG24-0002"] .mg-module-sensor-card__toggle')
+    page.get_by_role("button", name="Reset and Re-register").click()
+    dialog = page.locator("#reset-reregister-dialog")
+    dialog.wait_for(state="visible")
+    assert dialog.is_visible()
+    assert dialog.get_by_role("heading", name="Reset and Re-register Sensor").is_visible()
+    assert dialog.locator(".workflow-stepper li").count() == 16
+    assert dialog.get_by_role("status").count() == 1
+    assert dialog.get_by_role("button", name="Detect USB sensor").is_enabled()
+    assert posts == [{"workflow_start": {"device_id": "MG24-0002"}}]
+
+
+def test_reset_reregister_renders_verified_identity_and_ignores_stronger_wrong_rssi(dashboard_page):
+    page, posts = dashboard_page
+    posts.append({"identity_ui": True})
+    page.get_by_role("button", name="Close").click()
+    page.click('[data-node-id="MG24-0002"] .mg-module-sensor-card__toggle')
+    page.get_by_role("button", name="Reset and Re-register").click()
+    page.locator("#reset-reregister-dialog").wait_for(state="visible")
+    page.get_by_role("button", name="Scan for reset sensor").click()
+    page.get_by_text("Verified physical sensor", exact=True).wait_for()
+    assert page.get_by_text("Different sensor", exact=True).is_visible()
+    assert page.get_by_text("RSSI -18 dBm (informational)").is_visible()
+    provision = page.get_by_role("button", name="Provision This Sensor")
+    assert provision.is_enabled()
+    assert page.get_by_text("Expected onboarding identity: 7e6d1066…54a8").is_visible()
+    posts.remove({"identity_ui": True})
+
+
 @pytest.mark.parametrize("item,phase", [
     (None, "pending"),
     ({"commissioning_state": "incompatible", "commissioning_eligible": False, "compatible": False}, "classified"),
@@ -151,13 +227,14 @@ def test_connected_node_renders_live_sensor_inputs_in_disclosure(dashboard_page)
     assert toggle.get_attribute("aria-expanded") == "false"
     assert details.is_hidden()
     assert page.get_by_text("XIAO MG24 Sense 01", exact=True).is_visible()
-    assert page.get_by_text("MG24-0002", exact=True).is_hidden()
+    assert page.locator(".sensor-summary__identity .equipment-id").is_visible()
     assert page.get_by_role("button", name="Open Sensor").is_hidden()
     assert page.get_by_role("button", name="Configure", exact=True).is_hidden()
     card_width = page.locator(".mg-module-sensor-card").bounding_box()["width"]
     list_width = page.locator("#node-list").bounding_box()["width"]
-    assert card_width <= 352 and card_width < list_width
+    assert abs(card_width - list_width) <= 2
     toggle.click()
+    page.get_by_role("tab", name="Live Inputs").click()
     assert page.get_by_text("Acceleration X", exact=True).is_visible()
     assert page.get_by_text("0.896 g (gravity)", exact=True).is_visible()
     assert page.get_by_text("0.28 °/s (degrees per second)", exact=True).is_visible()
@@ -184,7 +261,7 @@ def test_sensor_disclosure_toggles_with_mouse_and_keyboard(dashboard_page):
     assert posts == []
 
 
-def test_multiple_sensor_disclosures_are_independent_and_unique(dashboard_page):
+def test_sensor_disclosures_use_single_expanded_row_and_unique_ids(dashboard_page):
     page, _posts = dashboard_page
     page.locator("#node-dialog").evaluate("dialog => dialog.close()")
     page.evaluate("""
@@ -200,14 +277,16 @@ def test_multiple_sensor_disclosures_are_independent_and_unique(dashboard_page):
     collapsed_boxes = cards.evaluate_all(
         "nodes => nodes.map(node => ({width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height}))"
     )
-    assert {box["height"] for box in collapsed_boxes} == {56}
+    assert all(60 <= box["height"] <= 90 for box in collapsed_boxes)
     assert len({round(box["width"]) for box in collapsed_boxes}) == 1
     toggles.nth(0).click()
     assert toggles.nth(0).get_attribute("aria-expanded") == "true"
     assert toggles.nth(1).get_attribute("aria-expanded") == "false"
     assert details.nth(0).is_visible() and details.nth(1).is_hidden()
-    assert cards.nth(0).bounding_box()["width"] > collapsed_boxes[0]["width"]
-    assert cards.nth(1).bounding_box()["height"] == 56
+    toggles.nth(1).click()
+    assert toggles.nth(0).get_attribute("aria-expanded") == "false"
+    assert toggles.nth(1).get_attribute("aria-expanded") == "true"
+    assert details.nth(0).is_hidden() and details.nth(1).is_visible()
 
 
 def test_collapsed_sensor_keeps_latest_telemetry_and_rerender_has_one_handler(dashboard_page):

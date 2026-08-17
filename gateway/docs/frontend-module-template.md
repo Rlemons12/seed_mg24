@@ -47,3 +47,29 @@ Physical sensor cards use the delegated disclosure helper in
 full page load, preserve their individual open state during an in-page
 telemetry render, and expose technical details only through a native button
 whose `aria-expanded` and controlled region remain synchronized.
+
+# Vibration condition monitoring
+
+The overview keeps vibration analytics inside each expanded sensor disclosure;
+it is not a separate application or navigation module. `vibration_monitoring.js`
+uses the existing `api()` client and renders dependency-free SVG charts with the
+shared shell theme variables. Data is fetched only for an expanded sensor and is
+cached for five seconds. The 15-minute, one-hour, and six-hour controls apply to
+all charts together.
+
+Operator wording must preserve the backend states `BASELINE_PENDING`, `NORMAL`,
+`ELEVATED`, `SIGNIFICANT_CHANGE`, `INSUFFICIENT_DATA`, and `INVALID`. The
+baseline similarity score describes agreement with that sensor/installation's
+frozen baseline; it is not machine-health percentage or failure probability.
+Acceleration RMS, peak, and dominant amplitude use g; dominant frequency uses
+Hz; crest factor and kurtosis are dimensionless. Gyroscope data remains angular
+velocity, not angular acceleration.
+
+Keep the disclosure visible in the overview:
+
+> Relative condition monitoring — not calibrated severity
+
+The longer explanation must state that these are not calibrated ISO severity
+measurements or automatic fault diagnoses. Invalid current windows hide current
+metric values. Unsupported protocol-1.0 sensors receive a bounded empty state,
+and stale state comes from the latest-window API rather than a client-only timer.

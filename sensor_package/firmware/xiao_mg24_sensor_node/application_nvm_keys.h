@@ -15,12 +15,14 @@ constexpr uint32_t kConfigurationSlotA = 0x0FF02u;
 constexpr uint32_t kConfigurationSlotB = 0x0FF03u;
 constexpr uint32_t kConfigurationStaging = 0x0FF04u;
 constexpr uint32_t kStoreMetadata = 0x0FF05u;
+constexpr uint32_t kResetTransactionMarker = 0x0FF06u;
 
 struct NamedKey { const char* name; uint32_t key; };
 constexpr NamedKey kRegistered[] = {
   {"identity_slot_a", kIdentitySlotA}, {"identity_slot_b", kIdentitySlotB},
   {"configuration_slot_a", kConfigurationSlotA}, {"configuration_slot_b", kConfigurationSlotB},
-  {"configuration_staging", kConfigurationStaging}, {"store_metadata", kStoreMetadata}
+  {"configuration_staging", kConfigurationStaging}, {"store_metadata", kStoreMetadata},
+  {"reset_transaction_marker", kResetTransactionMarker}
 };
 constexpr uint32_t kConfigurationReset[] = {
   kConfigurationSlotA, kConfigurationSlotB, kConfigurationStaging

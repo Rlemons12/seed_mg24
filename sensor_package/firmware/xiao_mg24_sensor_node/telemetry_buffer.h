@@ -7,6 +7,7 @@ class TelemetryBuffer {
   TelemetryBuffer();
   bool push(const TelemetryRecord& record);
   bool pop(TelemetryRecord* record);
+  void clear() { count_ = 0; dropped_count_ = 0; }
   uint8_t size() const { return count_; }
   uint8_t capacity() const { return TELEMETRY_BUFFER_CAPACITY; }
   uint32_t dropped_count() const { return dropped_count_; }

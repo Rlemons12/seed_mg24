@@ -28,9 +28,12 @@ StoreStatus encode_persistent_record(PersistentRecordType type,uint32_t generati
   put32(out+20,persistent_crc32(out,20)); *out_size=kPersistentHeaderSize+payload_size; return StoreStatus::Ok;
 }
 StoreStatus decode_persistent_record(const uint8_t* r,size_t size,PersistentRecordType expected,RecordView* out){
-  if(!r||!out) return StoreStatus::InvalidArgument; if(size<kPersistentHeaderSize) return StoreStatus::Corrupt;
-  if(get32(r)!=kMagic) return StoreStatus::Corrupt; if(r[5]!=kEnvelopeVersion) return StoreStatus::UnsupportedVersion;
-  if(r[4]!=(uint8_t)expected) return StoreStatus::Corrupt; if(get16(r+6)!=kPersistentHeaderSize||get16(r+10)!=0) return StoreStatus::Corrupt;
+  if(!r||!out) return StoreStatus::InvalidArgument;
+  if(size<kPersistentHeaderSize) return StoreStatus::Corrupt;
+  if(get32(r)!=kMagic) return StoreStatus::Corrupt;
+  if(r[5]!=kEnvelopeVersion) return StoreStatus::UnsupportedVersion;
+  if(r[4]!=(uint8_t)expected) return StoreStatus::Corrupt;
+  if(get16(r+6)!=kPersistentHeaderSize||get16(r+10)!=0) return StoreStatus::Corrupt;
   uint16_t n=get16(r+8); if(n>kPersistentMaxPayload||size!=kPersistentHeaderSize+n) return StoreStatus::Corrupt;
   if(get32(r+20)!=persistent_crc32(r,20)) return StoreStatus::IntegrityFailed;
   if(get32(r+16)!=persistent_crc32(r+kPersistentHeaderSize,n)) return StoreStatus::IntegrityFailed;

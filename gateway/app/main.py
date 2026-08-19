@@ -43,6 +43,7 @@ from gateway.app.profiles.registry import ProfileRegistry
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.repositories.firmware_repository import FirmwareHistoryRepository
 from gateway.app.request_security import require_bounded_same_origin_json
+from gateway.app.services.battery_health import BatteryHealthService
 from gateway.app.services.ble_provisioning import BleNodeProvisioner
 from gateway.app.services.compatibility_service import CompatibilityService
 from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, UsbFirmwareInstaller
@@ -72,6 +73,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     profile_registry.reload()
     compatibility = CompatibilityService(REPOSITORY_DIR / "shared_protocol" / "compatibility.json")
     websocket_manager = WebSocketManager()
+    battery_service = BatteryHealthService(session_factory, settings)
     telemetry_service = TelemetryService(
         session_factory, websocket_manager, settings.max_payload_bytes, settings.max_payload_json_bytes, gateway_id,
         vibration_service=VibrationConditionService(
@@ -80,6 +82,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             persistence_windows=settings.vibration_condition_persistence_windows,
             persistence_interval_seconds=settings.vibration_persistence_interval_seconds,
         ),
+        battery_service=battery_service,
     )
     retention_service = TelemetryRetentionService(session_factory, settings.history_retention_days, settings.history_retention_batch_size)
     catalog_path = settings.firmware_catalog_path
@@ -190,6 +193,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.settings = settings
     app.state.session_factory = session_factory
     app.state.websocket_manager = websocket_manager
+    app.state.battery_service = battery_service
     app.state.profile_registry = profile_registry
     app.state.compatibility = compatibility
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)

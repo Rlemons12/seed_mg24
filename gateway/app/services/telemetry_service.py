@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from gateway.app.ble.telemetry_parser import parse_telemetry
 from gateway.app.models import Reading
+from gateway.app.services.battery_health import BatteryHealthService
 from gateway.app.services.telemetry_persistence import TelemetryPersistenceError, TelemetryPersistenceService
 from gateway.app.services.vibration_condition import VibrationConditionService
 from gateway.app.services.websocket_manager import WebSocketManager
@@ -29,6 +30,7 @@ class TelemetryService:
         persistence_service: TelemetryPersistenceService | None = None,
         vibration_service: VibrationConditionService | None = None,
         acknowledgement_sender: Callable[[str, str, int], Awaitable[None]] | None = None,
+        battery_service: BatteryHealthService | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.websocket_manager = websocket_manager
@@ -37,6 +39,7 @@ class TelemetryService:
         self.persistence = persistence_service or TelemetryPersistenceService(session_factory, gateway_id)
         self.vibration = vibration_service or VibrationConditionService(session_factory, gateway_id)
         self.acknowledgement_sender = acknowledgement_sender
+        self.battery = battery_service
         self._sessions: dict[str, tuple[str, int | None, datetime | None]] = {}
         self._dedupe: dict[str, OrderedDict[str, None]] = {}
         self.vibration_counters = {
@@ -138,6 +141,8 @@ class TelemetryService:
             logger.exception("Telemetry packet was not persisted for node=%s", registered_device_id)
             raise
         rows = outcome.rows
+        if self.battery is not None and rows:
+            await asyncio.to_thread(self.battery.process_readings, registered_device_id, rows)
         self._remember(registered_device_id, dedupe_key)
         await self.websocket_manager.broadcast(
             "telemetry",

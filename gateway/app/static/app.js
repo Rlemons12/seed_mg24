@@ -258,6 +258,14 @@ function renderNodes() {
     const battery = sensorPanel(node.node_id, "battery", activeTab === "battery");
     const batteryMonitoring = el("div", undefined, "battery-monitoring");
     batteryMonitoring.append(el("p", "Open this tab to load battery runtime history.", "muted")); battery.append(batteryMonitoring);
+    const batteryModeActions = el("div", undefined, "actions");
+    const liveMode = el("button", "Go Live");
+    liveMode.type = "button";
+    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); notice(`${node.display_name} is now sending live telemetry.`); } catch(error) { notice(error.message); } });
+    const edgeMode = el("button", "Use Edge Summary");
+    edgeMode.type = "button";
+    edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); notice(`${node.display_name} is back in power-saving edge summary mode.`); } catch(error) { notice(error.message); } });
+    batteryModeActions.append(liveMode, edgeMode); battery.append(batteryModeActions);
     battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
     if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 
@@ -282,12 +290,6 @@ function renderNodes() {
     const configure = el("button", "Configure");
     configure.type = "button";
     configure.addEventListener("click", () => openDeviceConfiguration(node).catch((error) => notice(error.message)));
-    const liveMode = el("button", "Go Live");
-    liveMode.type = "button";
-    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); notice(`${node.display_name} is now sending live telemetry.`); } catch(error) { notice(error.message); } });
-    const edgeMode = el("button", "Use Edge Summary");
-    edgeMode.type = "button";
-    edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); notice(`${node.display_name} is back in power-saving edge summary mode.`); } catch(error) { notice(error.message); } });
     const remove = el("button", "Remove from network", "danger");
     remove.type = "button";
     remove.addEventListener("click", () => openLifecycle("remove", node));
@@ -297,7 +299,7 @@ function renderNodes() {
     const resetReregister = el("button", "Reset and Re-register", "danger");
     resetReregister.type = "button";
     resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
-    actions.append(reconnect, configure, liveMode, edgeMode, remove, factoryReset, resetReregister);
+    actions.append(reconnect, configure, remove, factoryReset, resetReregister);
     device.append(actions);
     details.append(overview, inputs, battery, vibration, baseline, device);
     card.append(heading, details);

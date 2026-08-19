@@ -62,3 +62,16 @@ def test_command_endpoint_rejects_non_allowlisted_input(client, compatible_disco
     )
     response = client.post("/api/devices/ARM2001-01/commands", json={"command": "BLE START"})
     assert response.status_code == 422
+
+
+def test_command_endpoint_requires_same_origin(client, compatible_discovery):
+    client.post(
+        "/api/devices",
+        json={"device_id": "ARM2001-01", "display_name": "Node", "discovery_address": compatible_discovery.address},
+    )
+    response = client.post(
+        "/api/devices/ARM2001-01/commands",
+        json={"command": "MODE LIVE"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert response.status_code == 403

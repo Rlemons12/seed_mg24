@@ -6,12 +6,12 @@ from gateway.app.ble.connection import DeviceConnection, reconnect_delay
 from gateway.app.ble.manager import BleManager, validate_command
 
 
-@pytest.mark.parametrize("command", ["PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000"])
+@pytest.mark.parametrize("command", ["PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000", "MODE LIVE", "MODE EDGE_SUMMARY"])
 def test_command_allowlist(command):
     assert validate_command(command) == command
 
 
-@pytest.mark.parametrize("command", ["BLE START", "LED 256", "RATE 49", "RATE 5001", "rm -rf"])
+@pytest.mark.parametrize("command", ["BLE START", "LED 256", "RATE 49", "RATE 5001", "MODE", "MODE TURBO", "rm -rf"])
 def test_command_rejects_unsupported_input(command):
     with pytest.raises(ValueError):
         validate_command(command)

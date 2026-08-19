@@ -8,11 +8,12 @@ from gateway.app.config import Settings
 
 LED_COMMAND = re.compile(r"LED (?:ON|OFF|(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$")
 RATE_COMMAND = re.compile(r"RATE (?:[5-9][0-9]|[1-9][0-9]{2}|[1-4][0-9]{3}|5000)$")
+MODE_COMMAND = re.compile(r"MODE (?:LIVE|EDGE_SUMMARY)$")
 
 
 def validate_command(command: str) -> str:
     command = " ".join(command.strip().upper().split())
-    if command == "PING" or LED_COMMAND.fullmatch(command) or RATE_COMMAND.fullmatch(command):
+    if command == "PING" or LED_COMMAND.fullmatch(command) or RATE_COMMAND.fullmatch(command) or MODE_COMMAND.fullmatch(command):
         return command
     raise ValueError("command is not in the supported allowlist")
 

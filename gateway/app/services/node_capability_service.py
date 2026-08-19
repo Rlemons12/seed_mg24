@@ -61,7 +61,7 @@ class NodeCapabilityService:
             firmware_version=node.firmware_version,
             interfaces=interfaces,
             filters=["none", "ema", "moving_average", "median", "digital_debounce"],
-            reporting_modes=["periodic", "change", "event", "heartbeat"],
+            reporting_modes=["live", "edge_summary", "event", "heartbeat"],
             configuration_readback=False,
         )
         if reported:

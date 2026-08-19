@@ -36,6 +36,8 @@
 #define ENABLE_IMU 1
 #define ENABLE_ANALOG 1
 #define ENABLE_BATTERY 1
+#define EDGE_SUMMARY_INTERVAL_MS 60000UL
+#define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 ProductionVibrationService vibration_service(imu, Wire1);
@@ -51,6 +53,10 @@ uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
 char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
+enum EdgeTelemetryMode : uint8_t { EDGE_SUMMARY_MODE = 0, LIVE_MODE = 1 };
+EdgeTelemetryMode reporting_mode = EDGE_SUMMARY_MODE;
+uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
+struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
 uint32_t mic_level = 0;
@@ -150,7 +156,7 @@ static const uuid_128 vibration_characteristic_uuid = {
 void ble_initialize_gatt_db();
 void ble_start_advertising();
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
-void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
+void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, uint32_t mic_raw, int mic_pct, const char* analog_json, uint32_t sample_count = 1);
 bool ble_send_payload(const char* payload);
 bool ble_send_oldest_buffered();
 void generate_telemetry_boot_id();
@@ -466,6 +472,16 @@ void handle_command(String command) {
       sample_interval_ms = value;
       microphone_runtime_config.report_interval_ms = value;
     } else command_result(false, "invalid_rate");
+  } else if (command == "MODE LIVE") {
+    reporting_mode = LIVE_MODE;
+    memset(&edge, 0, sizeof(edge));
+    command_result(true, "mode_live");
+  } else if (command == "MODE EDGE_SUMMARY") {
+    reporting_mode = EDGE_SUMMARY_MODE;
+    memset(&edge, 0, sizeof(edge));
+    last_edge_sample_ms = millis();
+    last_edge_report_ms = millis();
+    command_result(true, "mode_edge_summary");
   } else if (command == "BLE START") {
     ble_enabled = true;
 #if BLE_SUPPORTED
@@ -577,8 +593,46 @@ void print_telemetry() {
     Serial.println(telemetry_json);
   }
 #if BLE_SUPPORTED
-  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, mic_pct, analog_json);
+  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, mic_level, mic_pct, analog_json, 1);
 #endif
+}
+
+void capture_edge_sample() {
+  float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
+  if (imu_ok) {
+    seed_mg24::ImuRawSample sample = {};
+    if (vibration_service.latestRawSample(&sample)) {
+      constexpr float accel_g_per_count = 16.0f / 32768.0f;
+      constexpr float gyro_dps_per_count = 2000.0f / 32768.0f;
+      ax = sample.accel_x * accel_g_per_count; ay = sample.accel_y * accel_g_per_count; az = sample.accel_z * accel_g_per_count;
+      gx = sample.gyro_x * gyro_dps_per_count; gy = sample.gyro_y * gyro_dps_per_count; gz = sample.gyro_z * gyro_dps_per_count;
+    }
+  }
+  edge.battery += battery_voltage(); edge.mic += mic_level;
+  edge.accel[0] += ax; edge.accel[1] += ay; edge.accel[2] += az;
+  edge.gyro[0] += gx; edge.gyro[1] += gy; edge.gyro[2] += gz;
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) edge.analog[i] += analogRead(analog_pins[i]);
+  edge.count++;
+}
+
+void publish_edge_summary() {
+  if (!edge.count) return;
+  const double divisor = edge.count;
+  const int average_mic = (int)(edge.mic / divisor);
+  const int mic_pct = map(constrain(average_mic, MIC_VALUE_MIN, MIC_VALUE_MAX), MIC_VALUE_MIN, MIC_VALUE_MAX, 0, 100);
+  char analog_json[48] = "";
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) {
+    if (i) strlcat(analog_json, ",", sizeof(analog_json));
+    char value[8]; snprintf(value, sizeof(value), "%d", (int)(edge.analog[i] / divisor));
+    strlcat(analog_json, value, sizeof(analog_json));
+  }
+#if BLE_SUPPORTED
+  ble_update_telemetry((float)(edge.battery / divisor),
+      (float)(edge.accel[0] / divisor), (float)(edge.accel[1] / divisor), (float)(edge.accel[2] / divisor),
+      (float)(edge.gyro[0] / divisor), (float)(edge.gyro[1] / divisor), (float)(edge.gyro[2] / divisor),
+      average_mic, mic_pct, analog_json, edge.count);
+#endif
+  memset(&edge, 0, sizeof(edge));
 }
 
 void setup() {
@@ -791,7 +845,7 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D4\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
-           "\"reporting_modes\":[\"periodic\",\"change\",\"event\",\"heartbeat\"]},"
+           "\"reporting_modes\":[\"live\",\"edge_summary\",\"event\",\"heartbeat\"]},"
            "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
            "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true}}",
            runtime_node_id(), FIRMWARE_VERSION);
@@ -892,7 +946,7 @@ void ble_start_advertising() {
   app_assert_status(sc);
 }
 
-void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json) {
+void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, uint32_t mic_raw, int mic_pct, const char* analog_json, uint32_t sample_count) {
   if (!ble_enabled || ble_telemetry_characteristic_handle == 0) {
     return;
   }
@@ -901,7 +955,7 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
            "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
            runtime_node_id(), telemetry_boot_id, (unsigned long)telemetry_sequence++, millis(),
-           (unsigned long)max(1UL, microphone_channel.samples_since_report()), mic_level, mic_pct, batt, led_brightness,
+           (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness,
            ax, ay, az, gx, gy, gz, analog_json);
   if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
     processing_error_count++;
@@ -1042,18 +1096,34 @@ void loop() {
   // provisioning, or the existing telemetry path.
   if (!factory_reset_controller.busy()) vibration_service.service();
 #if BLE_SUPPORTED
-  ble_publish_vibration();
+  const uint32_t vibration_now = millis();
+  if (reporting_mode == LIVE_MODE || elapsed_since(vibration_now, last_edge_vibration_ms, EDGE_SUMMARY_INTERVAL_MS)) {
+    last_edge_vibration_ms = vibration_now;
+    ble_publish_vibration();
+  }
 #endif
   if (bootstrap_only) { delay(5); return; }
   update_microphone();
 
   const uint32_t now = millis();
-  if (microphone_channel.report_due(now)) {
+  if (reporting_mode == LIVE_MODE && microphone_channel.report_due(now)) {
     last_sample_ms = now;
     print_telemetry();
+  } else if (reporting_mode == EDGE_SUMMARY_MODE) {
+    if (elapsed_since(now, last_edge_sample_ms, microphone_runtime_config.sample_interval_ms)) {
+      last_edge_sample_ms = now;
+      capture_edge_sample();
+    }
+    if (elapsed_since(now, last_edge_report_ms, EDGE_SUMMARY_INTERVAL_MS)) {
+      last_edge_report_ms = now;
+      publish_edge_summary();
+    }
   }
 #if BLE_SUPPORTED
-  if (ble_connected && elapsed_since(now, last_heartbeat_ms, microphone_runtime_config.heartbeat_interval_ms)) {
+  const uint32_t heartbeat_interval = reporting_mode == EDGE_SUMMARY_MODE
+      ? max((uint32_t)EDGE_HEARTBEAT_INTERVAL_MS, microphone_runtime_config.heartbeat_interval_ms)
+      : microphone_runtime_config.heartbeat_interval_ms;
+  if (ble_connected && elapsed_since(now, last_heartbeat_ms, heartbeat_interval)) {
     last_heartbeat_ms = now;
     if (encode_heartbeat(telemetry_sequence++, now, battery_voltage(), offline_buffer.size(),
                          offline_buffer.dropped_count(), processing_error_count, sensor_error_count,

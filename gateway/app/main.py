@@ -178,6 +178,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             or request.url.path.endswith("/vibration/baseline/relearn")
             or request.url.path.endswith("/battery/mark-charged")
             or request.url.path.endswith("/battery/replace")
+            or request.url.path.endswith("/commands")
         )
         if protected_post:
             try:

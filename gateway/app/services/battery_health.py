@@ -288,11 +288,14 @@ class BatteryHealthService:
         status = self._replacement_status(eligible, baseline)
         trend = self._trend(eligible, baseline)
         elapsed = _seconds(active.started_at, now) if active else None
-        prediction = self._prediction(eligible, active, now)
         latest_voltage = session.scalar(select(Reading).where(
             Reading.registered_device_id == device.id, Reading.channel == "battery_voltage",
             Reading.normalized_value.is_not(None),
         ).order_by(Reading.received_at.desc()).limit(1))
+        voltage_metrics = self._voltage_metrics(session, device.id, now, latest_voltage)
+        prediction = self._prediction(eligible, active, now)
+        if prediction["confidence"] in {"HIGH", "MEDIUM"} and voltage_metrics["recent_sample_count"] < 3:
+            prediction["confidence"] = "LOW"
         voltage_state = self._voltage_state(latest_voltage.normalized_value if latest_voltage else None)
         explanation = self._explanation(baseline, ratio, eligible, status)
         return {
@@ -304,6 +307,7 @@ class BatteryHealthService:
                 "percentage": None,
                 "calibration_status": "NOT_CALIBRATED",
                 "state": voltage_state,
+                "trend": voltage_metrics,
             },
             "current_cycle": self._cycle_dict(active, now) if active else None,
             "history": {
@@ -346,6 +350,40 @@ class BatteryHealthService:
             "lower_bound": now + timedelta(seconds=max(0.0, lower_total - elapsed)),
             "upper_bound": now + timedelta(seconds=max(0.0, upper_total - elapsed)),
             "confidence": confidence, "unavailable_reason": None,
+        }
+
+    @staticmethod
+    def _voltage_metrics(
+        session: Session, device_id: int, now: datetime, latest: Reading | None,
+    ) -> dict:
+        def before(at: datetime) -> Reading | None:
+            return session.scalar(select(Reading).where(
+                Reading.registered_device_id == device_id, Reading.channel == "battery_voltage",
+                Reading.normalized_value.is_not(None), Reading.received_at <= at,
+            ).order_by(Reading.received_at.desc()).limit(1))
+
+        one_hour = before(now - timedelta(hours=1))
+        one_day = before(now - timedelta(hours=24))
+        recent = session.execute(select(
+            func.min(Reading.normalized_value), func.max(Reading.normalized_value), func.count(Reading.id),
+        ).where(
+            Reading.registered_device_id == device_id, Reading.channel == "battery_voltage",
+            Reading.normalized_value.is_not(None), Reading.received_at >= now - timedelta(hours=24),
+        )).one()
+
+        def slope(previous: Reading | None) -> float | None:
+            if latest is None or previous is None:
+                return None
+            hours = _seconds(previous.received_at, latest.received_at) / 3600
+            return (latest.normalized_value - previous.normalized_value) / hours if hours > 0 else None
+
+        return {
+            "voltage_1h_ago": one_hour.normalized_value if one_hour else None,
+            "voltage_24h_ago": one_day.normalized_value if one_day else None,
+            "voltage_change_per_hour": slope(one_hour),
+            "voltage_change_per_day": slope(one_day) * 24 if slope(one_day) is not None else None,
+            "recent_min_voltage": recent[0], "recent_max_voltage": recent[1],
+            "recent_sample_count": recent[2],
         }
 
     @staticmethod

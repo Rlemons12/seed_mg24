@@ -15,6 +15,7 @@ def test_battery_summary_starts_unknown_without_fabricated_percentage(client, ap
     response = client.get("/api/devices/BAT-API-1/battery")
     assert response.status_code == 200
     assert response.json()["voltage"]["percentage"] is None
+    assert response.json()["voltage"]["trend"]["recent_sample_count"] == 0
     assert response.json()["health"]["status"] == "LEARNING"
     assert response.json()["prediction"]["confidence"] == "UNKNOWN"
 

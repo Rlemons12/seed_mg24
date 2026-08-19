@@ -74,7 +74,7 @@ Confidence considers eligible history depth, runtime coefficient of variation, a
 
 ## Voltage and alerts
 
-Raw battery readings remain in the indexed readings table; dashboard history uses a bounded time window and row limit. Completed cycle summaries survive raw-reading retention. Voltage slope can be derived later from this bounded history without scanning the sensor's lifetime.
+Raw battery readings remain in the indexed readings table; dashboard history uses a bounded time window and row limit. The summary uses indexed point lookups for values at or before one hour and 24 hours ago, plus a bounded 24-hour aggregate for change/hour, change/day, recent minimum, recent maximum, and sample count. These describe voltage movement but do not infer state of charge. Completed cycle summaries survive raw-reading retention.
 
 Low-voltage warning and critical values are disabled until explicitly configured and field validated. Immediate voltage state is separate from runtime degradation. Alert records use a configurable cooldown and cover insufficient data, recharge soon, runtime degradation, replacement planning/requirement, and configured voltage warning/critical states.
 

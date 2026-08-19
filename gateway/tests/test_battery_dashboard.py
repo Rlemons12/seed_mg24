@@ -17,6 +17,7 @@ def test_battery_dashboard_labels_runtime_health_without_fake_percentage():
         "Battery voltage", "Current charge runtime", "Previous charge runtime", "Average last 5 charges",
         "Average last 10 charges", "Baseline runtime", "Runtime health", "Battery trend",
         "Estimated recharge window", "Replacement status", "Charge-cycle history",
+        "Estimated replacement window",
     ):
         assert label in source
     assert "not calibrated" in source

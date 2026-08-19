@@ -9,6 +9,12 @@ window.MG24BatteryMonitoring = (() => {
   };
   const date = (value) => value ? new Date(value).toLocaleString() : "Active";
   const ratio = (value) => value == null ? "Not enough data" : `${(value * 100).toFixed(1)}% of baseline`;
+  const replacementWindow = (forecast) => {
+    const estimate = forecast?.replace;
+    if (!estimate) return "Not enough data";
+    if (estimate.days === 0) return "Replacement threshold reached";
+    return `Approximately ${Math.round(estimate.lower_days)}–${Math.round(estimate.upper_days)} days`;
+  };
 
   function stat(label, value, help) {
     const item = node("div", null, "battery-stat"); item.append(node("span", label), node("strong", value), node("small", help)); return item;
@@ -52,6 +58,7 @@ window.MG24BatteryMonitoring = (() => {
       ["Battery trend", summary.health.trend.replaceAll("_", " "), "Observed runtime trend, not state of charge"],
       ["Estimated recharge window", summary.prediction.lower_bound ? `${date(summary.prediction.lower_bound)} – ${date(summary.prediction.upper_bound)}` : "Not enough data", `Confidence: ${summary.prediction.confidence}`],
       ["Replacement status", summary.replacement.status.replaceAll("_", " "), summary.replacement.explanation],
+      ["Estimated replacement window", replacementWindow(summary.replacement.forecast), `Confidence: ${summary.replacement.forecast.confidence}; broad trend projection, not an exact date`],
     ].forEach(([label, value, help]) => stats.append(stat(label, value, help)));
     const actions = node("div", null, "actions"); const charged = node("button", "Battery charged now"); charged.type = "button";
     charged.addEventListener("click", async () => { if (!window.confirm("Record a completed charge now? This starts a new charge cycle and preserves history.")) return; await api(`/api/devices/${encoded}/battery/mark-charged`, {method: "POST", body: JSON.stringify({})}); container.dataset.loaded = "false"; await load(container, deviceId, api, true); });

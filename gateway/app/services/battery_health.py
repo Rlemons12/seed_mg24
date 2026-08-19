@@ -287,6 +287,7 @@ class BatteryHealthService:
             row.runtime_health_ratio = row.runtime_seconds / baseline if baseline and row.runtime_seconds is not None else None
         status = self._replacement_status(eligible, baseline)
         trend = self._trend(eligible, baseline)
+        replacement_forecast = self._replacement_forecast(eligible, baseline)
         elapsed = _seconds(active.started_at, now) if active else None
         latest_voltage = session.scalar(select(Reading).where(
             Reading.registered_device_id == device.id, Reading.channel == "battery_voltage",
@@ -324,7 +325,7 @@ class BatteryHealthService:
                 "status": status, "trend": trend, "explanation": explanation,
             },
             "prediction": prediction,
-            "replacement": {"status": status, "explanation": explanation},
+            "replacement": {"status": status, "explanation": explanation, "forecast": replacement_forecast},
             "current_cycle_runtime_seconds": elapsed,
             "updated_at": now,
         }
@@ -423,6 +424,56 @@ class BatteryHealthService:
         if slope >= -0.06:
             return "DECLINING_SLOWLY"
         return "DECLINING_RAPIDLY"
+
+    def _replacement_forecast(self, eligible: list[BatteryCycle], baseline: float | None) -> dict:
+        rows = eligible[-self.settings.battery_trend_lookback_cycles:]
+        if baseline is None or len(rows) < max(4, self.settings.battery_baseline_minimum_cycles):
+            return self._empty_replacement_forecast("insufficient comparable completed cycles")
+        ratios = [row.runtime_seconds / baseline for row in rows]
+        mean_x = (len(ratios) - 1) / 2
+        mean_y = statistics.fmean(ratios)
+        denominator = sum((index - mean_x) ** 2 for index in range(len(ratios)))
+        slope = sum((index - mean_x) * (value - mean_y) for index, value in enumerate(ratios)) / denominator
+        if slope >= -0.005:
+            return self._empty_replacement_forecast("runtime is stable, improving, or declining too slowly to extrapolate")
+        fitted = [mean_y + slope * (index - mean_x) for index in range(len(ratios))]
+        residual = sum((actual - expected) ** 2 for actual, expected in zip(ratios, fitted, strict=True))
+        total = sum((actual - mean_y) ** 2 for actual in ratios)
+        r_squared = max(0.0, 1 - residual / total) if total > 0 else 0.0
+        recent_cycle_seconds = statistics.median(row.runtime_seconds for row in rows[-3:])
+        current_ratio = ratios[-1]
+
+        def estimate(threshold: float) -> dict:
+            if current_ratio <= threshold:
+                return {"days": 0.0, "lower_days": 0.0, "upper_days": 0.0}
+            cycles = (threshold - current_ratio) / slope
+            center = max(0.0, cycles * recent_cycle_seconds / 86400)
+            faster_cycles = (threshold - current_ratio) / (slope * 1.25)
+            slower_cycles = (threshold - current_ratio) / (slope * 0.75)
+            return {
+                "days": center,
+                "lower_days": max(0.0, faster_cycles * recent_cycle_seconds / 86400),
+                "upper_days": max(0.0, slower_cycles * recent_cycle_seconds / 86400),
+            }
+
+        confidence = "HIGH" if len(rows) >= 8 and r_squared >= 0.8 else "MEDIUM"
+        if r_squared < 0.5 or len(rows) < 6:
+            confidence = "LOW"
+        return {
+            "plan_replacement": estimate(self.settings.battery_plan_replacement_runtime_ratio),
+            "replace": estimate(self.settings.battery_replace_runtime_ratio),
+            "confidence": confidence,
+            "runtime_ratio_change_per_cycle": slope,
+            "r_squared": r_squared,
+            "unavailable_reason": None,
+        }
+
+    @staticmethod
+    def _empty_replacement_forecast(reason: str) -> dict:
+        return {
+            "plan_replacement": None, "replace": None, "confidence": "UNKNOWN",
+            "runtime_ratio_change_per_cycle": None, "r_squared": None, "unavailable_reason": reason,
+        }
 
     @staticmethod
     def _explanation(baseline: float | None, ratio: float | None, eligible: list[BatteryCycle], status: str) -> str:

@@ -66,6 +66,8 @@ Runtime health uses the median of the latest three eligible runtimes divided by 
 
 Replacement policy defaults to `AGING` below 0.90, `PLAN_REPLACEMENT` below 0.75, and `REPLACE` below 0.60, only when all of the configured consecutive recent cycles (three by default) cross the applicable threshold. One short cycle cannot trigger replacement. The API includes the baseline, recent runtimes, health ratio, and policy outcome so maintenance can audit the recommendation.
 
+When enough comparable cycles show a meaningful decline, the gateway also projects broad days-out windows for reaching the plan-replacement and replace thresholds. It fits a linear runtime-ratio change per cycle over the configured lookback, converts projected cycles to days using the median of the latest three eligible cycle runtimes, and reports a ±25% slope window. Confidence uses history depth and regression fit. The forecast is unavailable while learning, for stable/improving trends, or when decline is too small to extrapolate; it is maintenance planning guidance rather than an exact failure date.
+
 ## Recharge prediction and confidence
 
 Prediction is unavailable until the current generation has enough eligible cycles and an active cycle. It uses the median of up to ten recent eligible runtimes as the center, the observed 25th and 75th percentile positions as a conservative window, and subtracts current elapsed runtime. Values never go below zero. This is an expected window, not a precise cutoff time.

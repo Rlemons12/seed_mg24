@@ -162,6 +162,10 @@ def test_baseline_health_trend_and_prediction_use_observed_runtime(app):
     assert summary["health"]["runtime_health_ratio"] == pytest.approx(0.925)
     assert summary["health"]["trend"] in {"DECLINING_SLOWLY", "DECLINING_RAPIDLY"}
     assert summary["prediction"]["remaining_seconds"] is not None
+    forecast = summary["replacement"]["forecast"]
+    assert forecast["replace"]["days"] > 0
+    assert forecast["replace"]["lower_days"] < forecast["replace"]["upper_days"]
+    assert forecast["confidence"] in {"LOW", "MEDIUM", "HIGH"}
     assert summary["voltage"]["percentage"] is None
 
 
@@ -185,6 +189,14 @@ def test_sustained_degradation_drives_replacement_state(app, tail, expected):
 def test_one_short_cycle_does_not_trigger_replacement(app):
     seed_completed_cycles(app, [1000, 1000, 1000, 400, 980, 990])
     assert detector_service(app).summary("BAT-0001")["replacement"]["status"] == "GOOD"
+
+
+def test_stable_runtime_does_not_claim_a_replacement_date(app):
+    seed_completed_cycles(app, [1000, 995, 1005, 1000, 998, 1002])
+    forecast = detector_service(app).summary("BAT-0001")["replacement"]["forecast"]
+    assert forecast["replace"] is None
+    assert forecast["confidence"] == "UNKNOWN"
+    assert "stable" in forecast["unavailable_reason"]
 
 
 def test_battery_policy_validation_rejects_invalid_threshold_order():

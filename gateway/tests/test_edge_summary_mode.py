@@ -33,6 +33,7 @@ def test_dashboard_exposes_both_mode_controls():
     assert 'command:"MODE EDGE_SUMMARY"' in source
     assert 'Telemetry mode: ${' in source
     assert 'batteryModeStatus.textContent = "Telemetry mode: EDGE SUMMARY"' in source
+    assert "back in power-saving edge summary mode" not in source
     battery_panel = source.index('const battery = sensorPanel')
     mode_controls = source.index('const batteryModeActions')
     vibration_panel = source.index('const vibration = sensorPanel')

@@ -25,10 +25,12 @@ class BleManager:
         self.status_callback = status_callback
         self.client_factory = client_factory
         self.connections: dict[str, DeviceConnection] = {}
+        self.reporting_modes: dict[str, str] = {}
         self.semaphore = asyncio.Semaphore(settings.max_connection_attempts)
         self._pause_lock = asyncio.Lock()
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
+        self.reporting_modes.setdefault(device_id, "EDGE_SUMMARY")
         existing = self.connections.get(device_id)
         if existing is not None:
             if existing.address != address:
@@ -84,6 +86,10 @@ class BleManager:
         if connection is None:
             raise ConnectionError("device is not managed")
         await connection.send_command(normalized)
+        if normalized == "MODE LIVE":
+            self.reporting_modes[device_id] = "LIVE"
+        elif normalized == "MODE EDGE_SUMMARY":
+            self.reporting_modes[device_id] = "EDGE_SUMMARY"
         return normalized
 
     async def persistence_acknowledgement(self, device_id: str, boot_id: str, sequence: int) -> None:
@@ -95,9 +101,11 @@ class BleManager:
     def runtime(self, device_id: str) -> dict:
         connection = self.connections.get(device_id)
         return (
-            {"connection_status": connection.state, "last_error": connection.last_error}
+            {"connection_status": connection.state, "last_error": connection.last_error,
+             "reporting_mode": self.reporting_modes.get(device_id, "EDGE_SUMMARY")}
             if connection
-            else {"connection_status": "disconnected", "last_error": None}
+            else {"connection_status": "disconnected", "last_error": None,
+                  "reporting_mode": self.reporting_modes.get(device_id, "UNKNOWN")}
         )
 
     async def shutdown(self) -> None:

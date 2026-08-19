@@ -37,6 +37,27 @@ async def test_multiple_devices_have_independent_state(settings):
 
 
 @pytest.mark.asyncio
+async def test_reporting_mode_tracks_successful_mode_commands(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+
+    async def accept(_command):
+        return None
+
+    connection.send_command = accept
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
+    await manager.command("MG24-0001", "MODE LIVE")
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    await manager.command("MG24-0001", "MODE EDGE_SUMMARY")
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_stop_clears_pending_commands_safely():
     async def callback(*_args):
         pass

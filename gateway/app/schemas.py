@@ -85,6 +85,7 @@ class DeviceResponse(BaseModel):
     removal_reason: str | None
     factory_reset_status: str
     last_error: str | None = None
+    reporting_mode: Literal["EDGE_SUMMARY", "LIVE", "UNKNOWN"] = "UNKNOWN"
     rssi: int | None = None
 
 

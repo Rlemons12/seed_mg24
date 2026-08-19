@@ -1,7 +1,10 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LSM6DS3.h>
+#define ENABLE_MIC 0
+#if ENABLE_MIC
 #include <SilabsMicrophoneAnalog.h>
+#endif
 #include "sensor_config.h"
 #include "sensor_channel.h"
 #include "telemetry_buffer.h"
@@ -32,7 +35,6 @@
 #define MIC_SAMPLES 128
 #define MIC_VALUE_MIN 735
 #define MIC_VALUE_MAX 900
-#define ENABLE_MIC 1
 #define ENABLE_IMU 1
 #define ENABLE_ANALOG 1
 #define ENABLE_BATTERY 1
@@ -41,11 +43,12 @@
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 ProductionVibrationService vibration_service(imu, Wire1);
+#if ENABLE_MIC
 MicrophoneAnalog mic(MIC_DATA_PIN, MIC_PWR_PIN);
-
 uint32_t mic_buffer[MIC_SAMPLES];
 uint32_t mic_buffer_local[MIC_SAMPLES];
 volatile bool mic_ready = false;
+#endif
 
 uint32_t sample_interval_ms = 100;
 uint32_t last_sample_ms = 0;
@@ -117,8 +120,10 @@ const uint8_t analog_pins[] = {
 };
 
 void mic_samples_ready_cb() {
+#if ENABLE_MIC
   memcpy(mic_buffer_local, mic_buffer, MIC_SAMPLES * sizeof(uint32_t));
   mic_ready = true;
+#endif
 }
 
 void update_led() {
@@ -497,6 +502,7 @@ void handle_command(String command) {
 }
 
 void update_microphone() {
+#if ENABLE_MIC
   if (!mic_ok) {
     return;
   }
@@ -525,6 +531,7 @@ void update_microphone() {
   }
 
   mic.startSampling(mic_samples_ready_cb);
+#endif
 }
 
 float battery_voltage() {
@@ -705,16 +712,16 @@ void setup() {
   // startup operation is intentionally allowed to complete without filling the
   // FIFO; normal advertising is not delayed waiting for a vibration window.
 
-  if (ENABLE_MIC) {
-    mic.begin(mic_buffer, MIC_SAMPLES);
-    mic_ok = true;
-  }
+#if ENABLE_MIC
+  mic.begin(mic_buffer, MIC_SAMPLES);
+  mic_ok = true;
+#endif
   Serial.print("{\"type\":\"boot\",\"step\":\"mic\",\"ok\":");
   Serial.print(mic_ok ? "true" : "false");
   Serial.println("}");
-  if (mic_ok) {
-    mic.startSampling(mic_samples_ready_cb);
-  }
+#if ENABLE_MIC
+  if (mic_ok) mic.startSampling(mic_samples_ready_cb);
+#endif
 
   Serial.print("{\"type\":\"boot\",\"step\":\"ble\",\"supported\":");
   Serial.print(BLE_SUPPORTED ? "true" : "false");
@@ -835,8 +842,7 @@ void ble_initialize_gatt_db() {
 
   snprintf(capabilities_json, sizeof(capabilities_json),
            "{\"schema_version\":1,\"node_id\":\"%s\",\"firmware_version\":\"%s\","
-           "\"interfaces\":[{\"interface_id\":\"MIC\",\"type\":\"built_in\",\"capabilities\":[\"built_in_microphone\"]},"
-           "{\"interface_id\":\"IMU0\",\"type\":\"built_in\",\"capabilities\":[\"built_in_imu_accelerometer\",\"built_in_imu_gyroscope\"]},"
+           "\"interfaces\":[{\"interface_id\":\"IMU0\",\"type\":\"built_in\",\"capabilities\":[\"built_in_imu_accelerometer\",\"built_in_imu_gyroscope\"]},"
            "{\"interface_id\":\"VBAT\",\"type\":\"built_in\",\"capabilities\":[\"built_in_battery\"]},"
            "{\"interface_id\":\"D0\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D1\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"

@@ -2,6 +2,8 @@
 
 The sensor starts in `EDGE_SUMMARY` mode after every boot. An operator can use the device dashboard to select **Go Live** for high-rate troubleshooting and **Use Edge Summary** when finished. These controls send `MODE LIVE` and `MODE EDGE_SUMMARY` through the same-origin-protected device-command path; they do not reset, provision, or change device identity.
 
+The production firmware currently builds with `ENABLE_MIC=0`. The microphone driver, hardware object, initialization, and continuous sampling calls are excluded, and the node does not advertise a microphone capability. The legacy channel configuration remains as the persisted telemetry timing container; it does not activate microphone hardware.
+
 ## Modes
 
 `LIVE` publishes telemetry at the configured report interval. It is intended for short diagnostic sessions where the dashboard needs rapid updates.

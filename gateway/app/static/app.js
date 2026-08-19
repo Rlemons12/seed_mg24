@@ -204,7 +204,7 @@ function activateSensorTab(card, name, focus = false) {
   });
   card.querySelectorAll("[data-sensor-panel]").forEach((panel) => { panel.hidden = panel.dataset.sensorPanel !== name; });
   const panel = card.querySelector(`[data-sensor-panel="${name}"]`);
-  const loader = panel?._vibrationLoad; if (loader) loader().catch(() => {});
+  const loader = panel?._panelLoad || panel?._vibrationLoad; if (loader) loader().catch(() => {});
 }
 
 function renderNodes() {
@@ -238,7 +238,7 @@ function renderNodes() {
     details.hidden = !expanded;
     const activeTab = sensorTabState.get(node.node_id) || "overview";
     const tabs = el("div", undefined, "sensor-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", `${node.display_name} details`);
-    [["overview", "Overview"], ["inputs", "Live Inputs"], ["vibration", "Vibration"], ["baseline", "Baseline"], ["device", "Device Info"]]
+    [["overview", "Overview"], ["inputs", "Live Inputs"], ["battery", "Battery"], ["vibration", "Vibration"], ["baseline", "Baseline"], ["device", "Device Info"]]
       .forEach(([name, label]) => tabs.append(sensorTab(node.node_id, name, label, activeTab === name)));
     details.append(tabs);
 
@@ -254,6 +254,12 @@ function renderNodes() {
     const inputs = sensorPanel(node.node_id, "inputs", activeTab === "inputs"); inputs.append(el("h4", "Live sensor inputs"));
     const inputGrid = el("div", undefined, "channel-grid live-input-grid");
     renderLiveInputs(inputGrid, node, state.readings[node.node_id] || []); inputs.append(inputGrid);
+
+    const battery = sensorPanel(node.node_id, "battery", activeTab === "battery");
+    const batteryMonitoring = el("div", undefined, "battery-monitoring");
+    batteryMonitoring.append(el("p", "Open this tab to load battery runtime history.", "muted")); battery.append(batteryMonitoring);
+    battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
+    if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 
     const vibration = sensorPanel(node.node_id, "vibration", activeTab === "vibration");
     const vibrationView = appendVibrationPanel(vibration, node, expanded && activeTab === "vibration", "vibration"); vibration._vibrationLoad = vibrationView.load;
@@ -287,7 +293,7 @@ function renderNodes() {
     resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
     actions.append(reconnect, configure, remove, factoryReset, resetReregister);
     device.append(actions);
-    details.append(overview, inputs, vibration, baseline, device);
+    details.append(overview, inputs, battery, vibration, baseline, device);
     card.append(heading, details);
     list.append(card);
   });

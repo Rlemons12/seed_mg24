@@ -148,6 +148,19 @@
 .baseline-relearn-dialog__actions { display: flex; justify-content: flex-end; gap: .65rem; }
 .mg-shell .vibration-empty, .mg-shell .vibration-invalid, .mg-shell .vibration-loading { padding: 1rem; border: 1px dashed var(--mg-border); border-radius: var(--mg-radius-sm); color: var(--mg-muted); }
 .mg-shell .vibration-invalid { border-color: #d8ad72; color: #8a5205; }
+.mg-shell .battery-monitoring { display: grid; gap: 1rem; }
+.mg-shell .battery-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .65rem; }
+.mg-shell .battery-stat { padding: .8rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); background: var(--mg-surface); }
+.mg-shell .battery-stat > span, .mg-shell .battery-stat > strong, .mg-shell .battery-stat > small { display: block; }
+.mg-shell .battery-stat > span, .mg-shell .battery-stat > small { color: var(--mg-muted); }
+.mg-shell .battery-stat > strong { margin: .3rem 0; }
+.mg-shell .battery-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.mg-shell .battery-chart { min-width: 0; margin: 0; padding: .75rem; border: 1px solid var(--mg-border); border-radius: var(--mg-radius-sm); }
+.mg-shell .battery-chart svg { display: block; width: 100%; height: auto; }
+.mg-shell .battery-table-wrap { overflow-x: auto; }
+.mg-shell .battery-cycle-table { width: 100%; min-width: 60rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.mg-shell .battery-cycle-table th, .mg-shell .battery-cycle-table td { padding: .55rem; border-bottom: 1px solid var(--mg-border); text-align: right; }
+.mg-shell .battery-cycle-table th:first-child, .mg-shell .battery-cycle-table td:first-child { text-align: left; }
 .mg-shell .metric-label { display: inline-flex; align-items: center; gap: .3rem; }
 .mg-shell .metric-help { position: relative; display: inline-flex; font-weight: 400; text-align: left; }
 .mg-shell .metric-help__trigger { display: inline-grid; width: 1.75rem; min-width: 1.75rem; height: 1.75rem; padding: 0; place-items: center; border: 0; border-radius: 50%; color: var(--mg-accent); background: transparent; font-size: 1rem; line-height: 1; cursor: help; }
@@ -173,6 +186,7 @@
   .mg-shell .vibration-panel-header, .mg-shell .condition-overview__heading { align-items: stretch; flex-direction: column; }
   .mg-shell .condition-disclosure { text-align: left; }
   .mg-shell .condition-stat-grid, .mg-shell .vibration-chart-grid { grid-template-columns: 1fr; }
+  .mg-shell .battery-chart-grid { grid-template-columns: 1fr; }
   .mg-shell .live-input-grid--compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mg-shell .vibration-controls { align-items: stretch; flex-direction: column; }
   .mg-shell .baseline-details dl { grid-template-columns: 1fr; gap: .15rem; }

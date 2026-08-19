@@ -46,6 +46,8 @@ Defaults are conservative detection heuristics, not battery chemistry specificat
 
 One spike, small ADC jitter, a gateway restart, or a sensor reboot cannot independently create a new cycle. Sites must validate and tune these values against physical charger behavior.
 
+High-rate packets are all retained by telemetry persistence, but battery detector state is updated at a bounded five-second cadence by default. Gateway telemetry and vibration database writes are serialized before entering SQLite, preventing concurrent BLE callbacks from competing for SQLite's single writer. The cadence is configurable with `SEED_MG24_BATTERY_PROCESSING_INTERVAL_SECONDS` and remains well below the default multi-minute charge confirmation windows.
+
 ## Manual maintenance events and generations
 
 `POST /api/devices/{id}/battery/mark-charged` closes the active cycle when present and starts the next cycle without changing identity, provisioning, firmware, or lifecycle state. The request can explicitly identify a partial charge; that completed cycle is retained but excluded from baseline calculations.

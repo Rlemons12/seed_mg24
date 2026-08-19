@@ -84,6 +84,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             persistence_interval_seconds=settings.vibration_persistence_interval_seconds,
         ),
         battery_service=battery_service,
+        battery_processing_interval_seconds=settings.battery_processing_interval_seconds,
     )
     retention_service = TelemetryRetentionService(session_factory, settings.history_retention_days, settings.history_retention_batch_size)
     catalog_path = settings.firmware_catalog_path

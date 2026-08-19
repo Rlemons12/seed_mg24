@@ -1,9 +1,13 @@
+import asyncio
 import json
+import threading
+import time
 
 import pytest
 
 from gateway.app.database import create_database_engine, create_session_factory, initialize_database
 from gateway.app.repositories.device_repository import DeviceRepository
+from gateway.app.services.telemetry_persistence import PersistenceOutcome
 from gateway.app.services.telemetry_service import TelemetryService
 
 
@@ -76,3 +80,55 @@ async def test_websocket_event_is_serializable(settings):
     service = TelemetryService(factory, sockets)
     await service.ingest("ARM2001-01", '{"t":"h","v":1,"id":"ARM2001-01","s":9,"ms":20,"bu":0}')
     json.dumps(sockets.events[0][2])
+
+
+@pytest.mark.asyncio
+async def test_high_rate_battery_channel_is_persisted_but_battery_state_writes_are_throttled(settings):
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        DeviceRepository(session).create(device_id="ARM2001-01", display_name="Node")
+
+    class RecordingBattery:
+        def __init__(self):
+            self.calls = 0
+
+        def process_readings(self, _device_id, _rows):
+            self.calls += 1
+
+    battery = RecordingBattery()
+    service = TelemetryService(factory, RecordingWebSockets(), battery_service=battery, battery_processing_interval_seconds=60)
+    await service.ingest("ARM2001-01", '{"t":"h","v":1,"s":1,"ms":10,"bv":4.0,"bu":0,"dr":0,"pe":0,"se":0}')
+    await service.ingest("ARM2001-01", '{"t":"h","v":1,"s":2,"ms":20,"bv":3.99,"bu":0,"dr":0,"pe":0,"se":0}')
+    assert battery.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_telemetry_database_writes_are_serialized(settings):
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    factory = create_session_factory(engine)
+
+    class TrackingPersistence:
+        def __init__(self):
+            self.active = 0
+            self.maximum_active = 0
+            self.lock = threading.Lock()
+
+        def persist(self, *_args, **_kwargs):
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            time.sleep(0.05)
+            with self.lock:
+                self.active -= 1
+            return PersistenceOutcome([])
+
+    persistence = TrackingPersistence()
+    service = TelemetryService(factory, RecordingWebSockets(), persistence_service=persistence)
+    await asyncio.gather(
+        service.ingest("ARM2001-01", '{"t":"m","v":1,"s":1,"ms":10,"c":"analog_0","rv":1}'),
+        service.ingest("ARM2001-01", '{"t":"m","v":1,"s":2,"ms":20,"c":"analog_0","rv":2}'),
+    )
+    assert persistence.maximum_active == 1

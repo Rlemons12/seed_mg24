@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -31,6 +32,7 @@ class TelemetryService:
         vibration_service: VibrationConditionService | None = None,
         acknowledgement_sender: Callable[[str, str, int], Awaitable[None]] | None = None,
         battery_service: BatteryHealthService | None = None,
+        battery_processing_interval_seconds: float = 5.0,
     ) -> None:
         self.session_factory = session_factory
         self.websocket_manager = websocket_manager
@@ -40,6 +42,9 @@ class TelemetryService:
         self.vibration = vibration_service or VibrationConditionService(session_factory, gateway_id)
         self.acknowledgement_sender = acknowledgement_sender
         self.battery = battery_service
+        self.battery_processing_interval_seconds = battery_processing_interval_seconds
+        self._database_write_lock = asyncio.Lock()
+        self._battery_last_processed: dict[str, float] = {}
         self._sessions: dict[str, tuple[str, int | None, datetime | None]] = {}
         self._dedupe: dict[str, OrderedDict[str, None]] = {}
         self.vibration_counters = {
@@ -107,10 +112,11 @@ class TelemetryService:
                 self.vibration_counters["rejected"] += 1
                 raise ValueError("vibration message has no validated summary")
             try:
-                result = await asyncio.to_thread(
-                    self.vibration.process, registered_device_id, payload.vibration,
-                    session_id=session_id, observed_at=payload.received_at,
-                )
+                async with self._database_write_lock:
+                    result = await asyncio.to_thread(
+                        self.vibration.process, registered_device_id, payload.vibration,
+                        session_id=session_id, observed_at=payload.received_at,
+                    )
             except Exception:
                 self.vibration_counters["rejected"] += 1
                 logger.exception(
@@ -129,20 +135,26 @@ class TelemetryService:
             })
             return []
         try:
-            outcome = await asyncio.to_thread(
-                self.persistence.persist,
-                registered_device_id,
-                payload,
-                session_id=session_id,
-                measured_at=measured_at,
-                encoded_original=encoded_original,
-            )
+            async with self._database_write_lock:
+                outcome = await asyncio.to_thread(
+                    self.persistence.persist,
+                    registered_device_id,
+                    payload,
+                    session_id=session_id,
+                    measured_at=measured_at,
+                    encoded_original=encoded_original,
+                )
+                rows = outcome.rows
+                if self.battery is not None and any(row.channel == "battery_voltage" for row in rows):
+                    now = time.monotonic()
+                    last = self._battery_last_processed.get(registered_device_id)
+                    if last is None or now - last >= self.battery_processing_interval_seconds:
+                        await asyncio.to_thread(self.battery.process_readings, registered_device_id, rows)
+                        self._battery_last_processed[registered_device_id] = now
         except TelemetryPersistenceError:
             logger.exception("Telemetry packet was not persisted for node=%s", registered_device_id)
             raise
         rows = outcome.rows
-        if self.battery is not None and rows:
-            await asyncio.to_thread(self.battery.process_readings, registered_device_id, rows)
         self._remember(registered_device_id, dedupe_key)
         await self.websocket_manager.broadcast(
             "telemetry",

@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     battery_recharge_warning_seconds: float = Field(172800.0, ge=60, le=31536000)
     battery_trend_lookback_cycles: int = Field(6, ge=3, le=50)
     battery_alert_cooldown_seconds: float = Field(86400.0, ge=60, le=31536000)
+    battery_processing_interval_seconds: float = Field(5.0, ge=1.0, le=3600)
     battery_low_voltage_warning: float | None = Field(default=None, gt=0, le=10)
     battery_low_voltage_critical: float | None = Field(default=None, gt=0, le=10)
     gateway_id: str | None = None

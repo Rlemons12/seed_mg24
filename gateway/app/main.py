@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from gateway import __version__
 from gateway.app.api import (
+    battery,
     commands,
     commissioning,
     device_lifecycle,
@@ -174,6 +175,8 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             or request.url.path.startswith("/api/reset-reregister/")
             or request.url.path.endswith("/vibration/baseline/reset")
             or request.url.path.endswith("/vibration/baseline/relearn")
+            or request.url.path.endswith("/battery/mark-charged")
+            or request.url.path.endswith("/battery/replace")
         )
         if protected_post:
             try:
@@ -222,6 +225,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.dependency_overrides[get_session] = session_dependency(session_factory)
     app.include_router(health.router)
     app.include_router(devices.router)
+    app.include_router(battery.router)
     app.include_router(device_lifecycle.router)
     app.include_router(factory_reset.router)
     app.include_router(reset_reregister.router)

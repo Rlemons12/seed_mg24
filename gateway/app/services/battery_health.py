@@ -252,6 +252,20 @@ class BatteryHealthService:
             ))
             return [{"measured_at": row.received_at, "voltage": row.normalized_value} for row in reversed(rows)]
 
+    def replacement_history(self, node_id: str, *, limit: int = 100) -> list[dict]:
+        with self.session_factory() as session:
+            device = self._device(session, node_id)
+            rows = list(session.scalars(select(BatteryReplacementEvent).where(
+                BatteryReplacementEvent.registered_device_id == device.id,
+            ).order_by(BatteryReplacementEvent.replaced_at.desc()).limit(limit)))
+            return [{
+                "id": row.id, "old_battery_generation_id": row.old_battery_generation_id,
+                "new_battery_generation_id": row.new_battery_generation_id, "replaced_at": row.replaced_at,
+                "reason": row.reason, "notes": row.notes,
+                "previous_runtime_health_ratio": row.previous_runtime_health_ratio,
+                "previous_cycle_count": row.previous_cycle_count, "source": row.source,
+            } for row in rows]
+
     def _summary(self, session: Session, device: RegisteredDevice, now: datetime) -> dict:
         generation = session.scalar(select(BatteryGeneration).where(
             BatteryGeneration.registered_device_id == device.id, BatteryGeneration.ended_at.is_(None),

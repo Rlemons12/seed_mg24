@@ -66,7 +66,10 @@ class Settings(BaseSettings):
             raise ValueError("unsupported log level")
         return value
 
-    @field_validator("history_retention_days", "gateway_id", mode="before")
+    @field_validator(
+        "history_retention_days", "gateway_id", "battery_low_voltage_warning", "battery_low_voltage_critical",
+        mode="before",
+    )
     @classmethod
     def blank_is_disabled(cls, value):
         return None if value == "" else value

@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from gateway.app.config import Settings
 from gateway.app.models import (
+    BatteryAlert,
     BatteryCycle,
     BatteryGeneration,
     BatteryReplacementEvent,
@@ -76,6 +77,28 @@ def test_sensor_reboot_does_not_start_cycle(app):
         cycle = session.scalar(select(BatteryCycle))
         assert cycle.sensor_reboot_count == 1
         assert cycle.is_complete is False
+
+
+def test_large_gateway_gap_lowers_cycle_observability_and_excludes_baseline(app):
+    add_device(app)
+    service = detector_service(app)
+    service.process_readings("BAT-0001", [reading(START, 3.7)])
+    service.process_readings("BAT-0001", [reading(START + timedelta(hours=2), 3.68)])
+    service.mark_charged("BAT-0001", occurred_at=START + timedelta(hours=3), voltage=3.9)
+    with app.state.session_factory() as session:
+        completed = session.scalar(select(BatteryCycle).where(BatteryCycle.is_complete.is_(True)))
+        assert completed.is_baseline_eligible is False
+        assert completed.exclusion_reason == "LOW_OBSERVABILITY"
+
+
+def test_battery_alerts_are_deduplicated_within_cooldown(app):
+    add_device(app)
+    service = detector_service(app)
+    service.process_readings("BAT-0001", [reading(START, 3.7)])
+    service.process_readings("BAT-0001", [reading(START + timedelta(seconds=10), 3.69)])
+    with app.state.session_factory() as session:
+        alerts = list(session.scalars(select(BatteryAlert)))
+        assert [item.alert_type for item in alerts] == ["BATTERY_DATA_INSUFFICIENT"]
 
 
 def test_manual_charge_and_partial_charge_classification_survive_restart(app):

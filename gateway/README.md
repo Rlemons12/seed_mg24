@@ -7,6 +7,8 @@ adding a new page or navigation item.
 
 This component owns BLE discovery and connections, the node and attached-sensor registry, declarative profile import, provisioning, SQLite history, FastAPI, WebSockets, and the browser dashboard. It contains no Arduino source or firmware build logic.
 
+Battery charge-cycle runtime, degradation, recharge-window, and replacement planning are documented in [`../docs/battery-runtime-monitoring.md`](../docs/battery-runtime-monitoring.md). Battery percentage remains unavailable until a physical chemistry/discharge model is validated.
+
 ## Sensor Data Storage
 
 SQLite is the authoritative local/edge database on the Raspberry Pi. PostgreSQL is not required on the Raspberry Pi. By default the gateway opens `sqlite:///./data/seed_mg24.db`; set `SEED_MG24_DATABASE_URL` to another durable local SQLite path when required. The path is relative to the gateway process working directory. Stop the gateway before copying the database for an offline backup, and copy the database together with its `-wal` and `-shm` files if it cannot be cleanly stopped. A gateway intended for sustained high-rate history should use storage designed for its write volume and endurance rather than relying indefinitely on a low-quality SD card.

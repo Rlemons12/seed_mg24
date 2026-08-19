@@ -319,7 +319,7 @@ function renderRemovedNodes() {
       el("p", `Removed ${time(node.removed_at)}. Historical telemetry is retained.`, "muted"));
     const restore = el("button", "Restore/Reapprove");
     restore.type = "button";
-    restore.addEventListener("click", () => openLifecycle("restore", node));
+    restore.addEventListener("click", () => openLifecycle("restore", node).catch((error) => notice(error.message)));
     card.append(restore); list.append(card);
   });
   if (!state.removedNodes.length) list.append(el("p", "No removed sensor registrations.", "muted"));

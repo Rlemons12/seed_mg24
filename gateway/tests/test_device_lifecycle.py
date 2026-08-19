@@ -151,6 +151,10 @@ def test_restore_requires_explicit_confirmed_operation_and_reuses_record(client,
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Reading)) == 1
         assert session.scalar(select(func.count()).select_from(DeviceLifecycleEvent)) == 2
+        installation = session.scalar(select(SensorInstallation).where(SensorInstallation.node_id == "MG24-0001"))
+        assert installation.archived is False
+        assert installation.enabled is True
+        assert installation.provisioning_state == "active"
 
 
 @pytest.mark.asyncio

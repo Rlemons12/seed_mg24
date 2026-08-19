@@ -328,6 +328,7 @@ function renderRemovedNodes() {
 async function openLifecycle(operation, node) {
   const prepared = await api("/api/device-lifecycle/confirm", {method:"POST", body:JSON.stringify({
     operation, device_id:node.node_id || node.device_id, expected_hardware_id:node.hardware_id || null,
+    expected_ble_address:node.ble_address || null,
   })});
   state.lifecycle = prepared;
   $("lifecycle-title").textContent = operation === "remove" ? "Remove from network" : "Restore/Reapprove sensor";

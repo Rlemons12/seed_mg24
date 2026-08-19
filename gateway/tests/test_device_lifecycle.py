@@ -216,6 +216,7 @@ def test_dashboard_separates_remove_restore_and_factory_reset_workflows():
     assert "Historical telemetry" in script
     assert 'id="lifecycle-confirm-id"' in template
     assert "/api/device-lifecycle/confirm" in script and "/api/device-lifecycle/execute" in script
+    assert "expected_ble_address:node.ble_address || null" in script
     assert 'id="factory-reset-dialog"' in template
     assert "/api/factory-reset/" in script and "USB is required" in template
     assert "Remove from network" in script and "Factory Reset Sensor" in script

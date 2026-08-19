@@ -15,6 +15,11 @@ window.MG24BatteryMonitoring = (() => {
     if (estimate.days === 0) return "Replacement threshold reached";
     return `Approximately ${Math.round(estimate.lower_days)}–${Math.round(estimate.upper_days)} days`;
   };
+  const voltageHours = (prediction) => {
+    if (prediction?.remaining_hours == null) return "Not enough data";
+    if (prediction.remaining_hours === 0) return "Charge now";
+    return `Approximately ${prediction.lower_hours.toFixed(1)}–${prediction.upper_hours.toFixed(1)} hours`;
+  };
 
   function stat(label, value, help) {
     const item = node("div", null, "battery-stat"); item.append(node("span", label), node("strong", value), node("small", help)); return item;
@@ -57,6 +62,7 @@ window.MG24BatteryMonitoring = (() => {
       ["Runtime health", ratio(summary.health.runtime_health_ratio), summary.health.status],
       ["Battery trend", summary.health.trend.replaceAll("_", " "), "Observed runtime trend, not state of charge"],
       ["Estimated recharge window", summary.prediction.lower_bound ? `${date(summary.prediction.lower_bound)} – ${date(summary.prediction.upper_bound)}` : "Not enough data", `Confidence: ${summary.prediction.confidence}`],
+      ["Voltage-based time until charge", voltageHours(summary.prediction.voltage_based), `To ${summary.prediction.voltage_based.threshold_voltage ?? "configured"} V warning threshold; confidence: ${summary.prediction.voltage_based.confidence}`],
       ["Replacement status", summary.replacement.status.replaceAll("_", " "), summary.replacement.explanation],
       ["Estimated replacement window", replacementWindow(summary.replacement.forecast), `Confidence: ${summary.replacement.forecast.confidence}; broad trend projection, not an exact date`],
     ].forEach(([label, value, help]) => stats.append(stat(label, value, help)));

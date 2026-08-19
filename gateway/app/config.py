@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     battery_processing_interval_seconds: float = Field(5.0, ge=1.0, le=3600)
     battery_low_voltage_warning: float | None = Field(default=None, gt=0, le=10)
     battery_low_voltage_critical: float | None = Field(default=None, gt=0, le=10)
+    battery_voltage_prediction_min_decline_per_hour: float = Field(0.002, gt=0, le=1)
     gateway_id: str | None = None
     sensor_profile_directory: Path = Path("./data/sensor_profiles")
     max_profile_upload_bytes: int = Field(65536, ge=1024, le=1048576)

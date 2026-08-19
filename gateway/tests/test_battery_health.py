@@ -41,6 +41,8 @@ def detector_service(app):
         "battery_stable_voltage_seconds": 20,
         "battery_maximum_sample_gap_seconds": 120,
         "battery_baseline_minimum_cycles": 3,
+        "battery_low_voltage_warning": 3.5,
+        "battery_low_voltage_critical": 3.3,
     })
     return BatteryHealthService(app.state.session_factory, settings)
 
@@ -216,6 +218,32 @@ def test_stable_runtime_does_not_claim_a_replacement_date(app):
     assert forecast["replace"] is None
     assert forecast["confidence"] == "UNKNOWN"
     assert "stable" in forecast["unavailable_reason"]
+
+
+def test_voltage_decline_estimates_hours_until_configured_recharge_warning(app):
+    seed_completed_cycles(app, [800, 800, 800])
+    now = START + timedelta(days=1)
+    with app.state.session_factory() as session:
+        for index in range(20):
+            session.add(reading(now - timedelta(hours=1, seconds=index), 3.70))
+            session.add(reading(now - timedelta(seconds=index), 3.60))
+        session.commit()
+    prediction = detector_service(app).summary("BAT-0001", now)["prediction"]["voltage_based"]
+    assert prediction["remaining_hours"] == pytest.approx(1.0, rel=0.05)
+    assert prediction["lower_hours"] < prediction["remaining_hours"] < prediction["upper_hours"]
+    assert prediction["threshold_voltage"] == 3.5
+
+
+def test_flat_voltage_does_not_fabricate_hours_remaining(app):
+    seed_completed_cycles(app, [800, 800, 800])
+    now = START + timedelta(days=1)
+    with app.state.session_factory() as session:
+        session.add(reading(now - timedelta(hours=1), 3.70))
+        session.add(reading(now, 3.70))
+        session.commit()
+    prediction = detector_service(app).summary("BAT-0001", now)["prediction"]["voltage_based"]
+    assert prediction["remaining_hours"] is None
+    assert "no sustained voltage decline" in prediction["unavailable_reason"]
 
 
 def test_battery_policy_validation_rejects_invalid_threshold_order():

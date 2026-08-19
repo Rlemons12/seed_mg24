@@ -82,6 +82,8 @@ Raw battery readings remain in the indexed readings table; dashboard history use
 
 Low-voltage warning and critical values are disabled until explicitly configured and field validated. Immediate voltage state is separate from runtime degradation. Alert records use a configurable cooldown and cover insufficient data, recharge soon, runtime degradation, replacement planning/requirement, and configured voltage warning/critical states.
 
+This deployment configures a provisional 3.5 V recharge warning and 3.3 V critical warning for the specified unbranded 3.7 V 330 mAh single-cell Li-polymer battery. A separate voltage-based estimate uses median-smoothed current, one-hour, and 24-hour samples to extrapolate hours until 3.5 V. It requires at least a half-hour span and a sustained decline exceeding the configured noise slope; flat, rising, or noisy voltage returns unavailable. The displayed ±25% slope window is a field heuristic, not calibrated state of charge or guaranteed shutdown time.
+
 ## API and dashboard
 
 - `GET /api/devices/{id}/battery`

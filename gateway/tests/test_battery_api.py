@@ -18,6 +18,7 @@ def test_battery_summary_starts_unknown_without_fabricated_percentage(client, ap
     assert response.json()["voltage"]["trend"]["recent_sample_count"] == 0
     assert response.json()["health"]["status"] == "LEARNING"
     assert response.json()["prediction"]["confidence"] == "UNKNOWN"
+    assert response.json()["prediction"]["voltage_based"]["remaining_hours"] is None
 
 
 def test_manual_charge_cycle_history_and_detail(client, app):

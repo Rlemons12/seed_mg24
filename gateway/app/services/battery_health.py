@@ -305,6 +305,7 @@ class BatteryHealthService:
         ).order_by(Reading.received_at.desc()).limit(1))
         voltage_metrics = self._voltage_metrics(session, device.id, now, latest_voltage)
         prediction = self._prediction(eligible, active, now)
+        prediction["voltage_based"] = self._voltage_recharge_prediction(voltage_metrics)
         if prediction["confidence"] in {"HIGH", "MEDIUM"} and voltage_metrics["recent_sample_count"] < 3:
             prediction["confidence"] = "LOW"
         voltage_state = self._voltage_state(latest_voltage.normalized_value if latest_voltage else None)
@@ -367,14 +368,15 @@ class BatteryHealthService:
     def _voltage_metrics(
         session: Session, device_id: int, now: datetime, latest: Reading | None,
     ) -> dict:
-        def before(at: datetime) -> Reading | None:
-            return session.scalar(select(Reading).where(
+        def window_before(at: datetime) -> list[Reading]:
+            return list(session.scalars(select(Reading).where(
                 Reading.registered_device_id == device_id, Reading.channel == "battery_voltage",
                 Reading.normalized_value.is_not(None), Reading.received_at <= at,
-            ).order_by(Reading.received_at.desc()).limit(1))
+            ).order_by(Reading.received_at.desc()).limit(20)))
 
-        one_hour = before(now - timedelta(hours=1))
-        one_day = before(now - timedelta(hours=24))
+        current_window = window_before(now)
+        one_hour_window = window_before(now - timedelta(hours=1))
+        one_day_window = window_before(now - timedelta(hours=24))
         recent = session.execute(select(
             func.min(Reading.normalized_value), func.max(Reading.normalized_value), func.count(Reading.id),
         ).where(
@@ -382,19 +384,72 @@ class BatteryHealthService:
             Reading.normalized_value.is_not(None), Reading.received_at >= now - timedelta(hours=24),
         )).one()
 
-        def slope(previous: Reading | None) -> float | None:
-            if latest is None or previous is None:
+        def median_value(rows: list[Reading]) -> float | None:
+            values = [row.normalized_value for row in rows if row.normalized_value is not None]
+            return statistics.median(values) if values else None
+
+        current_smoothed = median_value(current_window)
+        one_hour = median_value(one_hour_window)
+        one_day = median_value(one_day_window)
+
+        def slope(previous: float | None, previous_rows: list[Reading]) -> float | None:
+            if current_smoothed is None or previous is None or not current_window or not previous_rows:
                 return None
-            hours = _seconds(previous.received_at, latest.received_at) / 3600
-            return (latest.normalized_value - previous.normalized_value) / hours if hours > 0 else None
+            hours = _seconds(previous_rows[0].received_at, current_window[0].received_at) / 3600
+            return (current_smoothed - previous) / hours if hours >= 0.5 else None
+
+        slope_1h = slope(one_hour, one_hour_window)
+        slope_24h = slope(one_day, one_day_window)
 
         return {
-            "voltage_1h_ago": one_hour.normalized_value if one_hour else None,
-            "voltage_24h_ago": one_day.normalized_value if one_day else None,
-            "voltage_change_per_hour": slope(one_hour),
-            "voltage_change_per_day": slope(one_day) * 24 if slope(one_day) is not None else None,
+            "current_smoothed_voltage": current_smoothed,
+            "voltage_1h_ago": one_hour,
+            "voltage_24h_ago": one_day,
+            "voltage_change_per_hour": slope_1h,
+            "voltage_change_per_day": slope_24h * 24 if slope_24h is not None else None,
+            "voltage_change_per_hour_24h": slope_24h,
             "recent_min_voltage": recent[0], "recent_max_voltage": recent[1],
             "recent_sample_count": recent[2],
+        }
+
+    def _voltage_recharge_prediction(self, metrics: dict) -> dict:
+        threshold = self.settings.battery_low_voltage_warning
+        current = metrics["current_smoothed_voltage"]
+        if threshold is None:
+            return self._empty_voltage_prediction("low-voltage warning threshold is not configured")
+        if current is None:
+            return self._empty_voltage_prediction("battery voltage history is unavailable")
+        if current <= threshold:
+            return {
+                "remaining_hours": 0.0, "lower_hours": 0.0, "upper_hours": 0.0,
+                "threshold_voltage": threshold, "slope_volts_per_hour": None,
+                "confidence": "HIGH", "unavailable_reason": None,
+            }
+        slopes = [value for value in (
+            metrics["voltage_change_per_hour"], metrics["voltage_change_per_hour_24h"],
+        ) if value is not None and value < -self.settings.battery_voltage_prediction_min_decline_per_hour]
+        if not slopes:
+            return self._empty_voltage_prediction("no sustained voltage decline is measurable")
+        slope = statistics.median(slopes)
+        remaining = max(0.0, (threshold - current) / slope)
+        confidence = "MEDIUM"
+        if len(slopes) == 2:
+            disagreement = abs(slopes[0] - slopes[1]) / abs(slope)
+            confidence = "HIGH" if disagreement <= 0.35 else "LOW"
+        return {
+            "remaining_hours": remaining,
+            "lower_hours": max(0.0, (threshold - current) / (slope * 1.25)),
+            "upper_hours": max(0.0, (threshold - current) / (slope * 0.75)),
+            "threshold_voltage": threshold, "slope_volts_per_hour": slope,
+            "confidence": confidence, "unavailable_reason": None,
+        }
+
+    @staticmethod
+    def _empty_voltage_prediction(reason: str) -> dict:
+        return {
+            "remaining_hours": None, "lower_hours": None, "upper_hours": None,
+            "threshold_voltage": None, "slope_volts_per_hour": None,
+            "confidence": "UNKNOWN", "unavailable_reason": reason,
         }
 
     @staticmethod

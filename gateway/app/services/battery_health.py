@@ -230,7 +230,12 @@ class BatteryHealthService:
                 select(BatteryCycle).where(BatteryCycle.registered_device_id == device.id)
                 .order_by(BatteryCycle.started_at.desc()).limit(limit)
             ))
-            return [self._cycle_dict(row, utc_now()) for row in rows]
+            baselines = self._generation_baselines(session, {row.battery_generation_id for row in rows})
+            return [self._cycle_dict(
+                row, utc_now(),
+                row.runtime_seconds / baselines[row.battery_generation_id]
+                if row.runtime_seconds is not None and baselines.get(row.battery_generation_id) else None,
+            ) for row in rows]
 
     def cycle(self, node_id: str, cycle_id: int) -> dict | None:
         with self.session_factory() as session:
@@ -238,7 +243,14 @@ class BatteryHealthService:
             row = session.scalar(select(BatteryCycle).where(
                 BatteryCycle.id == cycle_id, BatteryCycle.registered_device_id == device.id,
             ))
-            return self._cycle_dict(row, utc_now()) if row else None
+            if row is None:
+                return None
+            baselines = self._generation_baselines(session, {row.battery_generation_id})
+            ratio = (
+                row.runtime_seconds / baselines[row.battery_generation_id]
+                if row.runtime_seconds is not None and baselines.get(row.battery_generation_id) else None
+            )
+            return self._cycle_dict(row, utc_now(), ratio)
 
     def voltage_history(self, node_id: str, *, hours: int = 168, limit: int = 1000) -> list[dict]:
         cutoff = utc_now() - timedelta(hours=hours)
@@ -283,8 +295,6 @@ class BatteryHealthService:
         recent = eligible[-3:]
         recent_runtime = statistics.median(row.runtime_seconds for row in recent) if recent else None
         ratio = recent_runtime / baseline if baseline and recent_runtime is not None else None
-        for row in cycles:
-            row.runtime_health_ratio = row.runtime_seconds / baseline if baseline and row.runtime_seconds is not None else None
         status = self._replacement_status(eligible, baseline)
         trend = self._trend(eligible, baseline)
         replacement_forecast = self._replacement_forecast(eligible, baseline)
@@ -544,6 +554,19 @@ class BatteryHealthService:
             cycle.exclusion_reason = "CONFIG_CHANGED"
             cycle.configuration_change_count += 1
 
+    def _generation_baselines(self, session: Session, generation_ids: set[int]) -> dict[int, float | None]:
+        result: dict[int, float | None] = {}
+        minimum = self.settings.battery_baseline_minimum_cycles
+        for generation_id in generation_ids:
+            eligible = list(session.scalars(select(BatteryCycle).where(
+                BatteryCycle.battery_generation_id == generation_id, BatteryCycle.is_complete.is_(True),
+                BatteryCycle.is_baseline_eligible.is_(True), BatteryCycle.runtime_seconds.is_not(None),
+            ).order_by(BatteryCycle.cycle_number).limit(minimum)))
+            result[generation_id] = (
+                statistics.median(row.runtime_seconds for row in eligible) if len(eligible) >= minimum else None
+            )
+        return result
+
     def _new_cycle(
         self, session: Session, device: RegisteredDevice, generation: BatteryGeneration, started_at: datetime,
         voltage: float | None, reason: str, confidence: str,
@@ -613,7 +636,7 @@ class BatteryHealthService:
         return hashlib.sha256(value.encode()).hexdigest()[:16]
 
     @staticmethod
-    def _cycle_dict(cycle: BatteryCycle, now: datetime) -> dict:
+    def _cycle_dict(cycle: BatteryCycle, now: datetime, runtime_health_ratio: float | None = None) -> dict:
         runtime = cycle.runtime_seconds if cycle.is_complete else _seconds(cycle.started_at, now)
         wall_observed = cycle.observed_operating_seconds + cycle.unobserved_seconds
         observability = cycle.observability_ratio
@@ -628,7 +651,7 @@ class BatteryHealthService:
             "start_reason": cycle.start_reason, "end_reason": cycle.end_reason,
             "charge_detection_confidence": cycle.charge_detection_confidence, "is_complete": cycle.is_complete,
             "is_baseline_eligible": cycle.is_baseline_eligible, "exclusion_reason": cycle.exclusion_reason,
-            "runtime_anomaly_score": cycle.runtime_anomaly_score, "runtime_health_ratio": cycle.runtime_health_ratio,
+            "runtime_anomaly_score": cycle.runtime_anomaly_score, "runtime_health_ratio": runtime_health_ratio,
             "firmware_version": cycle.firmware_version, "protocol_version": cycle.protocol_version,
             "configuration_version": cycle.configuration_version,
             "workload": {

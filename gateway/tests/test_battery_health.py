@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from gateway.app.config import Settings
 from gateway.app.models import (
@@ -167,6 +167,25 @@ def test_baseline_health_trend_and_prediction_use_observed_runtime(app):
     assert forecast["replace"]["lower_days"] < forecast["replace"]["upper_days"]
     assert forecast["confidence"] in {"LOW", "MEDIUM", "HIGH"}
     assert summary["voltage"]["percentage"] is None
+
+
+def test_battery_summary_and_cycle_reads_do_not_write_or_take_sqlite_writer_lock(app):
+    seed_completed_cycles(app, [800, 820, 780, 760, 740, 720])
+    statements = []
+    engine = app.state.session_factory.kw["bind"]
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lstrip().upper())
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        service = detector_service(app)
+        service.summary("BAT-0001")
+        cycles = service.cycles("BAT-0001")
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+    assert cycles[1]["runtime_health_ratio"] == pytest.approx(0.9)
+    assert not any(statement.startswith(("UPDATE", "INSERT", "DELETE")) for statement in statements)
 
 
 def test_insufficient_and_excluded_cycles_remain_learning(app):

@@ -68,7 +68,9 @@ async def test_gap_out_of_order_fill_gateway_restart_and_sensor_reboot(settings)
     await service.ingest("ARM2001-01", packet(boot_a, 100))
     await service.ingest("ARM2001-01", packet(boot_a, 101))
     await service.ingest("ARM2001-01", packet(boot_a, 103))
-    assert acknowledgements[-1] == (boot_a, 101)
+    # Sequence 102 may have been irrecoverably dropped by the sensor's bounded
+    # buffer. The persisted head (103) must be ACKed so telemetry can continue.
+    assert acknowledgements[-1] == (boot_a, 103)
     with factory() as session:
         state = session.scalar(select(TelemetrySyncState).where(TelemetrySyncState.sensor_boot_id == boot_a))
     assert state.highest_seen_sequence == 103 and state.missing_sequence_count == 1

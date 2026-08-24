@@ -74,7 +74,10 @@ class TelemetryPersistenceService:
                         state.duplicate_count += 1
                         state.updated_at = utc_now()
                         session.commit()
-                        return PersistenceOutcome([], state.highest_contiguous_sequence, duplicate=True)
+                        # The firmware buffer is bounded and may have already dropped a
+                        # missing sequence. Acknowledge the record that is durably present;
+                        # waiting for a contiguous prefix would permanently block its head.
+                        return PersistenceOutcome([], state.highest_seen_sequence, duplicate=True)
 
                 capabilities = NodeCapabilityService(DeviceRepository(session)).get(node_id)
                 channel_interfaces = {
@@ -139,7 +142,9 @@ class TelemetryPersistenceService:
                 if payload.sensor_boot_id is not None and payload.sequence_number is not None:
                     session.flush()
                     state = self._update_sync_state(session, device.id, payload.sensor_boot_id, payload.sequence_number)
-                    acknowledged_sequence = state.highest_contiguous_sequence
+                    # Transport acknowledgement follows durable persistence, while the
+                    # sync state independently retains gaps for observability.
+                    acknowledged_sequence = state.highest_seen_sequence
                 session.commit()
                 return PersistenceOutcome(rows, acknowledged_sequence)
             except ValueError:

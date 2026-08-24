@@ -52,9 +52,9 @@ def test_imu_sensor_fault_is_distinguished_from_waiting_for_first_summary():
       console.log(JSON.stringify({{
         fault: ui.hasImuSensorFault([
           {{channel:"temperature", quality:"good"}},
-          {{channel:"accel_x", quality:"sensor_fault"}}
+          {{channel:"acceleration_x", quality:"sensor_fault"}}
         ]),
-        healthy: ui.hasImuSensorFault([{{channel:"accel_x", quality:"good"}}])
+        healthy: ui.hasImuSensorFault([{{channel:"angular_velocity_x", quality:"good"}}])
       }}));
     """)
     assert result == {"fault": True, "healthy": False}

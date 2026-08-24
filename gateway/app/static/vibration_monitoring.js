@@ -399,7 +399,7 @@
 
   function hasImuSensorFault(readings = []) {
     return readings.some((reading) =>
-      (String(reading.channel || "").startsWith("accel_") || String(reading.channel || "").startsWith("gyro_"))
+      (String(reading.channel || "").startsWith("acceleration_") || String(reading.channel || "").startsWith("angular_velocity_"))
       && reading.quality === "sensor_fault");
   }
 

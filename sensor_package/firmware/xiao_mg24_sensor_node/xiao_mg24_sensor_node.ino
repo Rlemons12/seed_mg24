@@ -40,6 +40,8 @@
 #define ENABLE_BATTERY 1
 #define EDGE_SUMMARY_INTERVAL_MS 60000UL
 #define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
+#define IMU_RETRY_INTERVAL_MS 30000UL
+#define IMU_MAX_INITIALIZATION_ATTEMPTS 5
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 ProductionVibrationService vibration_service(imu, Wire1);
@@ -75,6 +77,12 @@ volatile bool ble_system_booted = false;
 bool application_setup_complete = false;
 bool ble_database_initialized = false;
 bool vibration_initialized = false;
+uint8_t imu_initialization_attempts = 0;
+uint8_t vibration_initialization_attempts = 0;
+uint32_t last_imu_initialization_ms = 0;
+uint32_t last_vibration_initialization_ms = 0;
+int imu_initialization_status = -1;
+uint8_t imu_who_am_i = 0;
 char pending_ble_command[192] = {};
 #if BLE_SUPPORTED
 uint8_t ble_connection_handle = 0xff;
@@ -109,6 +117,9 @@ bool bootstrap_only = true;
 bool ble_stack_ready = false;
 
 bool application_ble_stack_ready() { return ble_stack_ready; }
+
+bool initialize_imu();
+void print_imu_status();
 
 const char* runtime_node_id() {
   return (identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious)
@@ -449,7 +460,12 @@ void handle_command(String command) {
   if (handle_configuration_transaction(command)) return;
 
   if (command == "VIBRATION STATUS" || command == "VIBRATION_STATUS") {
+    print_imu_status();
     vibration_service.printHealth(Serial);
+    return;
+  }
+  if (command == "IMU STATUS" || command == "IMU_STATUS") {
+    print_imu_status();
     return;
   }
 
@@ -532,6 +548,37 @@ void update_microphone() {
 
   mic.startSampling(mic_samples_ready_cb);
 #endif
+}
+
+bool initialize_imu() {
+  if (!ENABLE_IMU || imu_initialization_attempts >= IMU_MAX_INITIALIZATION_ATTEMPTS) return false;
+  imu_initialization_attempts++;
+  last_imu_initialization_ms = millis();
+  imu.settings.accelRange = 16;
+  imu.settings.accelSampleRate = 416;
+  imu.settings.accelBandWidth = 100;
+  imu.settings.gyroRange = 2000;
+  imu.settings.gyroSampleRate = 416;
+  imu_initialization_status = (int)imu.begin();
+  Wire1.setClock(400000);
+  imu_who_am_i = 0;
+  imu.readRegister(&imu_who_am_i, LSM6DS3_ACC_GYRO_WHO_AM_I_REG);
+  imu_ok = imu_initialization_status == IMU_SUCCESS &&
+      (imu_who_am_i == LSM6DS3_ACC_GYRO_WHO_AM_I || imu_who_am_i == LSM6DS3_C_ACC_GYRO_WHO_AM_I);
+  Serial.print("{\"type\":\"imu_initialization\",\"attempt\":"); Serial.print(imu_initialization_attempts);
+  Serial.print(",\"status\":"); Serial.print(imu_initialization_status);
+  Serial.print(",\"who_am_i\":"); Serial.print(imu_who_am_i);
+  Serial.print(",\"ok\":"); Serial.print(imu_ok ? "true" : "false"); Serial.println("}");
+  if (!imu_ok) sensor_error_count++;
+  return imu_ok;
+}
+
+void print_imu_status() {
+  Serial.print("{\"type\":\"imu_status\",\"ok\":"); Serial.print(imu_ok ? "true" : "false");
+  Serial.print(",\"initialization_status\":"); Serial.print(imu_initialization_status);
+  Serial.print(",\"who_am_i\":"); Serial.print(imu_who_am_i);
+  Serial.print(",\"initialization_attempts\":"); Serial.print(imu_initialization_attempts);
+  Serial.print(",\"maximum_attempts\":"); Serial.print(IMU_MAX_INITIALIZATION_ATTEMPTS); Serial.println("}");
 }
 
 float battery_voltage() {
@@ -690,20 +737,9 @@ void setup() {
   delay(300);
   Serial.println("{\"type\":\"boot\",\"step\":\"power\"}");
 
-  imu_ok = false;
-  if (ENABLE_IMU) {
-    // Keep production aligned with the physically validated FIFO configuration.
-    imu.settings.accelRange = 16;
-    imu.settings.accelSampleRate = 416;
-    imu.settings.accelBandWidth = 100;
-    imu.settings.gyroRange = 2000;
-    imu.settings.gyroSampleRate = 416;
-    imu_ok = (imu.begin() == 0);
-    // imu.begin() initializes the onboard Wire1 bus and restores its default
-    // clock, so apply the validated 400 kHz setting afterward.
-    // The onboard LSM6DS3 is on Wire1 (PB2/PB3), not the header Wire bus.
-    Wire1.setClock(400000);
-  }
+  // Retry transient WHO_AM_I/I2C startup failures without resetting identity,
+  // configuration, BLE, or the rest of the sensor application.
+  imu_ok = initialize_imu();
   Serial.print("{\"type\":\"boot\",\"step\":\"imu\",\"ok\":");
   Serial.print(imu_ok ? "true" : "false");
   Serial.println("}");
@@ -1043,16 +1079,27 @@ void loop() {
 #if BLE_SUPPORTED
   ble_initialize_when_ready();
 #endif
-  if (!vibration_initialized && imu_ok
+  const uint32_t initialization_now = millis();
+  if (!imu_ok && imu_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
+      elapsed_since(initialization_now, last_imu_initialization_ms, IMU_RETRY_INTERVAL_MS)) {
+    initialize_imu();
+  }
+  if (!vibration_initialized && imu_ok &&
+      vibration_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
+      (vibration_initialization_attempts == 0 ||
+       elapsed_since(initialization_now, last_vibration_initialization_ms, IMU_RETRY_INTERVAL_MS))
 #if BLE_SUPPORTED
       && ble_database_initialized
 #endif
   ) {
-    vibration_initialized = true;
+    vibration_initialization_attempts++;
+    last_vibration_initialization_ms = initialization_now;
     const bool vibration_ok = vibration_service.begin();
+    vibration_initialized = vibration_ok;
     Serial.print("{\"type\":\"boot\",\"step\":\"vibration\",\"ok\":");
     Serial.print(vibration_ok ? "true" : "false");
-    Serial.println("}");
+    Serial.print(",\"attempt\":"); Serial.print(vibration_initialization_attempts); Serial.println("}");
+    if (!vibration_ok) sensor_error_count++;
   }
 #if BLE_SUPPORTED
   if (ble_command_pending) {
@@ -1112,7 +1159,8 @@ void loop() {
   update_microphone();
 
   const uint32_t now = millis();
-  if (reporting_mode == LIVE_MODE && microphone_channel.report_due(now)) {
+  if (reporting_mode == LIVE_MODE &&
+      elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
     last_sample_ms = now;
     print_telemetry();
   } else if (reporting_mode == EDGE_SUMMARY_MODE) {

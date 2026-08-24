@@ -30,6 +30,13 @@ def test_existing_compact_payload_normalizes_channels():
     assert result.channels["battery_voltage"].value == 4.008
 
 
+def test_failed_imu_is_not_presented_as_good_zero_data():
+    payload = dict(COMPACT, io=0, a=[0, 0, 0], g=[0, 0, 0])
+    result = parse_telemetry(json.dumps(payload))
+    assert result.channels["acceleration_x"].quality == "sensor_fault"
+    assert result.channels["angular_velocity_z"].quality == "sensor_fault"
+
+
 def test_new_measurement_and_missing_optional_fields():
     result = parse_telemetry('{"t":"m","v":1,"id":"ARM2001-01","c":"sensor_1","rv":1834,"nv":null,"u":"adc_count","q":"uncalibrated"}')
     assert result.record_type == "measurement"

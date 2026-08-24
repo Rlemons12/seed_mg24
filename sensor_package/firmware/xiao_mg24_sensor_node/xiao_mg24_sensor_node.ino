@@ -552,6 +552,15 @@ void update_microphone() {
 
 bool initialize_imu() {
   if (!ENABLE_IMU || imu_initialization_attempts >= IMU_MAX_INITIALIZATION_ATTEMPTS) return false;
+  if (imu_initialization_attempts > 0) {
+    // A failed WHO_AM_I read can leave the sensor rail or bus peripheral in a
+    // bad startup state. Cycle only the IMU rail; identity, NVM, BLE, battery
+    // tracking, and the MCU remain running.
+    digitalWrite(IMU_POWER_PIN, LOW);
+    delay(50);
+    digitalWrite(IMU_POWER_PIN, HIGH);
+    delay(300);
+  }
   imu_initialization_attempts++;
   last_imu_initialization_ms = millis();
   imu.settings.accelRange = 16;
@@ -994,10 +1003,10 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
   }
 
   int written = snprintf(ble_json, sizeof(ble_json),
-           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,"
+           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,\"io\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
            runtime_node_id(), telemetry_boot_id, (unsigned long)telemetry_sequence++, millis(),
-           (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness,
+           (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness, imu_ok ? 1 : 0,
            ax, ay, az, gx, gy, gz, analog_json);
   if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
     processing_error_count++;
@@ -1120,7 +1129,7 @@ void loop() {
     // A disconnected host can leave a partial request buffered. A new framed
     // bootstrap request always starts with 'M', so resynchronize instead of
     // concatenating two transactions and misreading their schema fields.
-    if (c == 'M' && serial_length > 0) {
+    if (c == 'M' && serial_length > 0 && Serial.peek() == 'G') {
       serial_length = 0;
       serial_overflow = false;
     }

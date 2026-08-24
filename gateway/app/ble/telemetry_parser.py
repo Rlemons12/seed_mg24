@@ -127,18 +127,26 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
                 quality=quality,
                 value_kind=value_kind,
             )
+    imu_indicator = work.get("io", work.get("imu", 1))
+    if imu_indicator not in {0, 1} or isinstance(imu_indicator, bool):
+        raise TelemetryParseError("io must be 0 or 1")
+    imu_quality = "good" if imu_indicator == 1 else "sensor_fault"
     acceleration = work.get("a")
     if acceleration is None and isinstance(work.get("accel"), dict):
         acceleration = [work["accel"].get(axis) for axis in ("x", "y", "z")]
     if acceleration is not None:
         for axis, value in zip("xyz", _array(acceleration, "a", exact=3), strict=True):
-            channels[f"acceleration_{axis}"] = ChannelValue(value=value, unit="g", value_kind="calibrated")
+            channels[f"acceleration_{axis}"] = ChannelValue(
+                value=value, unit="g", quality=imu_quality, value_kind="calibrated"
+            )
     gyro = work.get("g")
     if gyro is None and isinstance(work.get("gyro"), dict):
         gyro = [work["gyro"].get(axis) for axis in ("x", "y", "z")]
     if gyro is not None:
         for axis, value in zip("xyz", _array(gyro, "g", exact=3), strict=True):
-            channels[f"angular_velocity_{axis}"] = ChannelValue(value=value, unit="dps", value_kind="calibrated")
+            channels[f"angular_velocity_{axis}"] = ChannelValue(
+                value=value, unit="dps", quality=imu_quality, value_kind="calibrated"
+            )
     analog = work.get("n", work.get("analog"))
     if analog is not None:
         for index, value in enumerate(_array(analog, "n", maximum=16)):

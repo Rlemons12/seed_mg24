@@ -12,6 +12,9 @@ def test_imu_initialization_is_bounded_retryable_and_diagnostic():
     assert "imu_who_am_i" in source
     assert 'command == "IMU STATUS"' in source
     assert "vibration_initialized = vibration_ok" in source
+    assert "digitalWrite(IMU_POWER_PIN, LOW)" in source
+    assert "Serial.peek() == 'G'" in source
+    assert '\\"io\\":%d' in source
 
 
 def test_live_reporting_does_not_depend_on_microphone_samples():

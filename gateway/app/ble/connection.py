@@ -54,6 +54,8 @@ class DeviceConnection:
         self.capabilities: dict[str, Any] = {}
         self._lock = asyncio.Lock()
         self._commands: asyncio.Queue[tuple[str, asyncio.Future]] = asyncio.Queue(maxsize=32)
+        self._command_ready = asyncio.Event()
+        self._pending_persistence_ack: tuple[str, int] | None = None
         self._stop = asyncio.Event()
         self._force_disconnect = asyncio.Event()
         self._task: asyncio.Task | None = None
@@ -75,6 +77,7 @@ class DeviceConnection:
     async def stop(self) -> None:
         self._stop.set()
         self._force_disconnect.set()
+        self._command_ready.set()
         if self._task:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -82,6 +85,7 @@ class DeviceConnection:
             _command, future = self._commands.get_nowait()
             if not future.done():
                 future.set_exception(ConnectionError("device management stopped; pending command cancelled"))
+        self._pending_persistence_ack = None
         await self._set_state("disconnected")
 
     async def disconnect(self) -> None:
@@ -94,7 +98,11 @@ class DeviceConnection:
         if self.state != "connected":
             raise ConnectionError("device is not connected")
         future = asyncio.get_running_loop().create_future()
-        self._commands.put_nowait((command, future))
+        try:
+            self._commands.put_nowait((command, future))
+        except asyncio.QueueFull as exc:
+            raise ConnectionError("device command queue is full") from exc
+        self._command_ready.set()
         await asyncio.wait_for(future, timeout=timeout)
 
     def supports_persistence_ack(self) -> bool:
@@ -111,7 +119,12 @@ class DeviceConnection:
             return
         if re.fullmatch(r"[0-9a-f]{16}", boot_id) is None or not 0 <= sequence <= 0xFFFFFFFF:
             raise ValueError("invalid persistence acknowledgement")
-        await self.send_command(f"TACK 2 {boot_id} {sequence}")
+        if self.state != "connected":
+            return
+        pending = self._pending_persistence_ack
+        if pending is None or pending[0] != boot_id or sequence > pending[1]:
+            self._pending_persistence_ack = (boot_id, sequence)
+        self._command_ready.set()
 
     async def run(self) -> None:
         failure_count = 0
@@ -188,10 +201,7 @@ class DeviceConnection:
                             await self._safe_telemetry(bytes(data))
                         except Exception as exc:
                             logger.debug("Polling %s failed: %s", self.device_id, type(exc).__name__)
-                    try:
-                        await asyncio.wait_for(disconnected.wait(), timeout=self.poll_interval)
-                    except TimeoutError:
-                        pass
+                    await self._wait_for_activity(disconnected)
             finally:
                 self._client = None
                 self._notification_active = False
@@ -208,6 +218,18 @@ class DeviceConnection:
             logger.warning("Rejected telemetry from %s: %s", self.device_id, str(exc)[:160])
         except Exception:
             logger.exception("Telemetry handling failed for %s", self.device_id)
+
+    async def _wait_for_activity(self, disconnected: asyncio.Event) -> None:
+        disconnect_waiter = asyncio.create_task(disconnected.wait())
+        command_waiter = asyncio.create_task(self._command_ready.wait())
+        _done, pending = await asyncio.wait(
+            {disconnect_waiter, command_waiter}, timeout=self.poll_interval,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for waiter in pending:
+            waiter.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _read_metadata(self, client) -> None:
         try:
@@ -253,6 +275,13 @@ class DeviceConnection:
             self.capabilities = {}
 
     async def _drain_commands(self, client) -> None:
+        self._command_ready.clear()
+        pending_ack = self._pending_persistence_ack
+        self._pending_persistence_ack = None
+        if pending_ack is not None:
+            boot_id, sequence = pending_ack
+            command = f"TACK 2 {boot_id} {sequence}"
+            await client.write_gatt_char(COMMAND_UUID, (command + "\n").encode("ascii"), response=True)
         while not self._commands.empty():
             command, future = await self._commands.get()
             try:
@@ -267,3 +296,5 @@ class DeviceConnection:
                 if not future.done():
                     future.set_exception(exc)
                 raise
+        if self._pending_persistence_ack is not None or not self._commands.empty():
+            self._command_ready.set()

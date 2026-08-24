@@ -89,12 +89,42 @@ async def test_persistence_ack_is_capability_gated_and_bounded():
     connection.capabilities = {"data_management": {
         "telemetry_version": 2, "boot_id": True, "persistence_ack": True, "backlog_ack": True,
     }}
-    task = asyncio.create_task(connection.send_persistence_ack("0123456789abcdef", 7))
-    await asyncio.sleep(0)
-    command, future = connection._commands.get_nowait()
-    assert command == "TACK 2 0123456789abcdef 7"
-    future.set_result(None)
-    await task
+    await connection.send_persistence_ack("0123456789abcdef", 7)
+    await connection.send_persistence_ack("0123456789abcdef", 8)
+    await connection.send_persistence_ack("0123456789abcdef", 6)
+    assert connection._commands.empty()
+    assert connection._pending_persistence_ack == ("0123456789abcdef", 8)
+    assert connection._command_ready.is_set()
+
+    class Client:
+        writes = []
+
+        async def write_gatt_char(self, _uuid, value, response):
+            self.writes.append((value, response))
+
+    client = Client()
+    await connection._drain_commands(client)
+    assert client.writes == [(b"TACK 2 0123456789abcdef 8\n", True)]
+    assert connection._pending_persistence_ack is None
+
+
+@pytest.mark.asyncio
+async def test_live_ack_burst_never_consumes_operator_command_queue(settings):
+    async def callback(*_args):
+        pass
+
+    connection = DeviceConnection(
+        "MG24-0001", "AA", telemetry_callback=callback, status_callback=callback,
+        connection_semaphore=asyncio.Semaphore(1),
+    )
+    connection.state = "connected"
+    connection.capabilities = {"data_management": {
+        "telemetry_version": 2, "boot_id": True, "persistence_ack": True, "backlog_ack": True,
+    }}
+    for sequence in range(1000):
+        await connection.send_persistence_ack("0123456789abcdef", sequence)
+    assert connection._commands.empty()
+    assert connection._pending_persistence_ack == ("0123456789abcdef", 999)
 
 
 class FailingClient:

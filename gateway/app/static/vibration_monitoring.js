@@ -361,7 +361,9 @@
     const view = views.get(container) || { axis: "z", data: null, node: null };
     if (!data.latest) {
       const protocol = node?.protocol_version || "not reported";
-      const message = protocol.startsWith("1.1")
+      const message = data.imuFault
+        ? "IMU sensor fault: the accelerometer/gyroscope is not responding, so vibration summaries cannot be produced."
+        : protocol.startsWith("1.1")
         ? "Waiting for the first vibration summary from this sensor."
         : `No vibration summaries have been received. This sensor reports protocol ${protocol}; vibration monitoring requires production firmware using protocol 1.1.0.`;
       next.append(keyed(element("div", message, "vibration-empty"), "empty"));
@@ -393,6 +395,12 @@
     container.dispatchEvent(new CustomEvent("mg24:vibration-summary", { bubbles: true, detail: {
       nodeId: node.node_id, condition: data.condition, baseline: data.baseline, latest: data.latest,
     } }));
+  }
+
+  function hasImuSensorFault(readings = []) {
+    return readings.some((reading) =>
+      (String(reading.channel || "").startsWith("accel_") || String(reading.channel || "").startsWith("gyro_"))
+      && reading.quality === "sensor_fault");
   }
 
   function ensureView(container) {
@@ -472,12 +480,13 @@
           api(`/api/devices/${encodeURIComponent(deviceId)}/vibration/baseline`),
           api(`/api/devices/${encodeURIComponent(deviceId)}/condition`), fetchHistory(api, deviceId, range, cached?.data?.history || []),
           api(`/api/devices/${encodeURIComponent(deviceId)}/vibration/baseline/history?limit=20`),
+          api(`/api/devices/${encodeURIComponent(deviceId)}/readings/latest`),
         ]).finally(() => inflight.delete(cacheKey));
         inflight.set(cacheKey, request);
       }
-      const [latest, baseline, condition, history, baselineHistory] = await request;
+      const [latest, baseline, condition, history, baselineHistory, readings] = await request;
       if (container.dataset.range !== range) return;
-      const data = { latest, baseline, condition, history, baselineHistory: baselineHistory.items || [] };
+      const data = { latest, baseline, condition, history, baselineHistory: baselineHistory.items || [], imuFault: hasImuSensorFault(readings) };
       const loadedAt = Date.now();
       cache.set(cacheKey, { loadedAt, data }); render(container, data, node); container.dataset.vibrationRender = String(loadedAt);
     } catch (error) {
@@ -495,5 +504,5 @@
     }
   }
 
-  return { METRICS, HELP, parseUtcTimestamp, buildHistoryRange, fetchHistory, comparison, mapSeries, statePresentation, render, load };
+  return { METRICS, HELP, parseUtcTimestamp, buildHistoryRange, fetchHistory, comparison, mapSeries, statePresentation, hasImuSensorFault, render, load };
 }));

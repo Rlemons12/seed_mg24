@@ -44,6 +44,24 @@ def test_condition_state_mapping_and_current_vs_baseline_calculation():
     assert result["comparison"]["percent"] == 100
 
 
+def test_imu_sensor_fault_is_distinguished_from_waiting_for_first_summary():
+    source = (STATIC / "vibration_monitoring.js").read_text(encoding="utf-8")
+    module = (STATIC / "vibration_monitoring.js").as_posix()
+    result = run_node(f"""
+      const ui = require({json.dumps(module)});
+      console.log(JSON.stringify({{
+        fault: ui.hasImuSensorFault([
+          {{channel:"temperature", quality:"good"}},
+          {{channel:"accel_x", quality:"sensor_fault"}}
+        ]),
+        healthy: ui.hasImuSensorFault([{{channel:"accel_x", quality:"good"}}])
+      }}));
+    """)
+    assert result == {"fault": True, "healthy": False}
+    assert "IMU sensor fault: the accelerometer/gyroscope is not responding" in source
+    assert "/readings/latest" in source
+
+
 def test_all_requested_chart_metrics_map_valid_axis_history_and_ignore_invalid_windows():
     module = (STATIC / "vibration_monitoring.js").as_posix()
     result = run_node(f"""

@@ -62,6 +62,21 @@ templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 logger = logging.getLogger(__name__)
 
 
+def _effective_device_metadata(device, reported: dict | None) -> dict:
+    """Merge a transient BLE read with last verified metadata without erasing it."""
+    metadata = {
+        "sensor_package_version": device.sensor_package_version,
+        "firmware_version": device.firmware_version,
+        "protocol_version": device.protocol_version,
+        "configuration_schema_version": device.configuration_schema_version,
+        "build_identifier": device.build_identifier,
+        "git_commit": device.firmware_git_commit,
+        "v": device.telemetry_schema_version,
+    }
+    metadata.update({key: value for key, value in (reported or {}).items() if value not in (None, "")})
+    return metadata
+
+
 def create_app(settings: Settings | None = None, *, client_factory=None, scanner_factory=None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -107,7 +122,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 if device and not device.archived and device.enabled and device.lifecycle_state != "removed":
                     if state == "connected":
                         connection = manager.connections.get(device_id)
-                        metadata = connection.metadata if connection else {}
+                        metadata = _effective_device_metadata(device, connection.metadata if connection else None)
                         result = compatibility.evaluate(metadata)
                         repository.update(
                             device,

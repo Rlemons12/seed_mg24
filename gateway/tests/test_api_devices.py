@@ -84,17 +84,17 @@ def test_identify_endpoint_runs_bounded_pattern(client, app, compatible_discover
     )
     calls = []
 
-    async def identify(device_id, restore_brightness):
-        calls.append((device_id, restore_brightness))
+    async def identify(device_id):
+        calls.append(device_id)
 
     app.state.ble_manager.identify = identify
     response = client.post("/api/devices/ARM2001-01/identify", json={})
     assert response.status_code == 200
     assert response.json() == {
         "accepted": True, "device_id": "ARM2001-01",
-        "pattern": "three-short-one-long", "restored_brightness": 0,
+        "pattern": "three-short-one-long", "final_led_state": "off",
     }
-    assert calls == [("ARM2001-01", 0)]
+    assert calls == ["ARM2001-01"]
 
 
 def test_identify_endpoint_requires_same_origin(client, compatible_discovery):

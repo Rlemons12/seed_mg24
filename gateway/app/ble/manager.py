@@ -93,10 +93,8 @@ class BleManager:
             self.reporting_modes[device_id] = "EDGE_SUMMARY"
         return normalized
 
-    async def identify(self, device_id: str, restore_brightness: int = 0) -> None:
-        """Run a bounded, distinctive LED pattern and restore the prior level."""
-        if not 0 <= restore_brightness <= 255:
-            raise ValueError("restore brightness must be between 0 and 255")
+    async def identify(self, device_id: str) -> None:
+        """Run a bounded, distinctive LED pattern and leave the indicator off."""
         lock = self._identify_locks.setdefault(device_id, asyncio.Lock())
         if lock.locked():
             raise ConnectionError("device identification is already in progress")
@@ -113,7 +111,7 @@ class BleManager:
                     await self.command(device_id, command)
                     await asyncio.sleep(delay)
             finally:
-                await self.command(device_id, f"LED {restore_brightness}")
+                await self.command(device_id, "LED OFF")
 
     async def persistence_acknowledgement(self, device_id: str, boot_id: str, sequence: int) -> None:
         connection = self.connections.get(device_id)

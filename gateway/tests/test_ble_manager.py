@@ -58,6 +58,30 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
 
 
 @pytest.mark.asyncio
+async def test_identify_uses_distinctive_pattern_and_restores_brightness(settings, monkeypatch):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    commands = []
+
+    async def record(_device_id, command):
+        commands.append(command)
+        return command
+
+    async def no_delay(_seconds):
+        pass
+
+    monkeypatch.setattr(manager, "command", record)
+    monkeypatch.setattr("gateway.app.ble.manager.asyncio.sleep", no_delay)
+    await manager.identify("MG24-0001", 37)
+    assert commands == [
+        "LED OFF", "LED ON", "LED OFF", "LED ON", "LED OFF",
+        "LED ON", "LED OFF", "LED ON", "LED OFF", "LED 37",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stop_clears_pending_commands_safely():
     async def callback(*_args):
         pass

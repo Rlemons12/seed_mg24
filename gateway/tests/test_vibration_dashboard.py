@@ -204,6 +204,9 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert "mg24:vibration-summary" in app
     assert "other.setAttribute(\"aria-expanded\", \"false\")" in disclosure
     assert ".sensor-tabs" in css and ".sensor-summary__status" in css
+    assert 'el("button", "Identify Sensor")' in app
+    assert "/identify" in app
+    assert "blinked three times quickly and once slowly" in app
     assert ".live-input-grid--compact" in css
 
 

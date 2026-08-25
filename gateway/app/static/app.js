@@ -292,6 +292,17 @@ function renderNodes() {
     const configure = el("button", "Configure");
     configure.type = "button";
     configure.addEventListener("click", () => openDeviceConfiguration(node).catch((error) => notice(error.message)));
+    const identify = el("button", "Identify Sensor");
+    identify.type = "button";
+    identify.addEventListener("click", async () => {
+      identify.disabled = true;
+      identify.textContent = "Identifyingâ€¦";
+      try {
+        await api(`/api/devices/${encodeURIComponent(node.node_id)}/identify`, {method:"POST", body:JSON.stringify({})});
+        notice(`${node.display_name} blinked three times quickly and once slowly.`);
+      } catch (error) { notice(error.message); }
+      finally { identify.disabled = false; identify.textContent = "Identify Sensor"; }
+    });
     const remove = el("button", "Remove from network", "danger");
     remove.type = "button";
     remove.addEventListener("click", () => openLifecycle("remove", node));
@@ -301,7 +312,7 @@ function renderNodes() {
     const resetReregister = el("button", "Reset and Re-register", "danger");
     resetReregister.type = "button";
     resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
-    actions.append(reconnect, configure, remove, factoryReset, resetReregister);
+    actions.append(identify, reconnect, configure, remove, factoryReset, resetReregister);
     device.append(actions);
     details.append(overview, inputs, battery, vibration, baseline, device);
     card.append(heading, details);

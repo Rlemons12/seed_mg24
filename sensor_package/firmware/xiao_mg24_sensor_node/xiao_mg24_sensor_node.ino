@@ -605,6 +605,7 @@ void enter_low_power_mode() {
   digitalWrite(BATTERY_ENABLE_PIN, LOW);
   low_power_rails_suspended = true;
   last_low_power_report_ms = millis();
+  last_heartbeat_ms = last_low_power_report_ms;
 }
 
 void exit_low_power_mode() {

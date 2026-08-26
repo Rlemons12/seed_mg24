@@ -20,6 +20,7 @@ def test_low_power_mode_gates_sensor_rails_and_vibration_work():
     snapshot = source[source.index("void publish_low_power_snapshot() {") : source.index("void print_imu_status() {")]
     assert "digitalWrite(IMU_POWER_PIN, LOW)" in enter
     assert "digitalWrite(BATTERY_ENABLE_PIN, LOW)" in enter
+    assert "last_heartbeat_ms = last_low_power_report_ms" in enter
     assert "digitalWrite(IMU_POWER_PIN, HIGH)" in snapshot
     assert "digitalWrite(BATTERY_ENABLE_PIN, HIGH)" in snapshot
     assert "reporting_mode != LOW_POWER_MODE) vibration_service.service()" in source

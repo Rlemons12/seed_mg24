@@ -207,6 +207,9 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert 'el("button", "Identify Sensor")' in app
     assert "/identify" in app
     assert "blinked three times quickly and once slowly" in app
+    assert 'el("button", "Use Low Power")' in app
+    assert 'command:"MODE LOW_POWER"' in app
+    assert "vibration windows are paused" in app
     assert ".live-input-grid--compact" in css
 
 

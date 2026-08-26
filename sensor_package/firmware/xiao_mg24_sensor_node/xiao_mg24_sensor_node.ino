@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LSM6DS3.h>
+#include <ArduinoLowPower.h>
 #define ENABLE_MIC 0
 #if ENABLE_MIC
 #include <SilabsMicrophoneAnalog.h>
@@ -40,6 +41,8 @@
 #define ENABLE_BATTERY 1
 #define EDGE_SUMMARY_INTERVAL_MS 60000UL
 #define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
+#define LOW_POWER_REPORT_INTERVAL_MS 300000UL
+#define LOW_POWER_SLEEP_SLICE_MS 1000UL
 #define IMU_RETRY_INTERVAL_MS 30000UL
 #define IMU_MAX_INITIALIZATION_ATTEMPTS 5
 
@@ -58,9 +61,12 @@ uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
 char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
-enum EdgeTelemetryMode : uint8_t { EDGE_SUMMARY_MODE = 0, LIVE_MODE = 1 };
+enum EdgeTelemetryMode : uint8_t { EDGE_SUMMARY_MODE = 0, LIVE_MODE = 1, LOW_POWER_MODE = 2 };
 EdgeTelemetryMode reporting_mode = EDGE_SUMMARY_MODE;
 uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
+uint32_t last_low_power_report_ms = 0;
+bool low_power_rails_suspended = false;
+volatile bool low_power_exit_pending = false;
 struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
@@ -119,6 +125,9 @@ bool ble_stack_ready = false;
 bool application_ble_stack_ready() { return ble_stack_ready; }
 
 bool initialize_imu();
+void enter_low_power_mode();
+void exit_low_power_mode();
+void publish_low_power_snapshot();
 void print_imu_status();
 
 const char* runtime_node_id() {
@@ -494,15 +503,21 @@ void handle_command(String command) {
       microphone_runtime_config.report_interval_ms = value;
     } else command_result(false, "invalid_rate");
   } else if (command == "MODE LIVE") {
+    exit_low_power_mode();
     reporting_mode = LIVE_MODE;
     memset(&edge, 0, sizeof(edge));
     command_result(true, "mode_live");
   } else if (command == "MODE EDGE_SUMMARY") {
+    exit_low_power_mode();
     reporting_mode = EDGE_SUMMARY_MODE;
     memset(&edge, 0, sizeof(edge));
     last_edge_sample_ms = millis();
     last_edge_report_ms = millis();
     command_result(true, "mode_edge_summary");
+  } else if (command == "MODE LOW_POWER") {
+    reporting_mode = LOW_POWER_MODE;
+    enter_low_power_mode();
+    command_result(true, "mode_low_power");
   } else if (command == "BLE START") {
     ble_enabled = true;
 #if BLE_SUPPORTED
@@ -580,6 +595,70 @@ bool initialize_imu() {
   Serial.print(",\"ok\":"); Serial.print(imu_ok ? "true" : "false"); Serial.println("}");
   if (!imu_ok) sensor_error_count++;
   return imu_ok;
+}
+
+void enter_low_power_mode() {
+  memset(&edge, 0, sizeof(edge));
+  led_brightness = 0;
+  update_led();
+  digitalWrite(IMU_POWER_PIN, LOW);
+  digitalWrite(BATTERY_ENABLE_PIN, LOW);
+  low_power_rails_suspended = true;
+  last_low_power_report_ms = millis();
+}
+
+void exit_low_power_mode() {
+  if (!low_power_rails_suspended) return;
+  digitalWrite(BATTERY_ENABLE_PIN, HIGH);
+  digitalWrite(IMU_POWER_PIN, HIGH);
+  delay(300);
+  imu_initialization_attempts = 0;
+  vibration_initialization_attempts = 0;
+  vibration_initialized = false;
+  initialize_imu();
+  low_power_rails_suspended = false;
+}
+
+void publish_low_power_snapshot() {
+  digitalWrite(BATTERY_ENABLE_PIN, HIGH);
+  digitalWrite(IMU_POWER_PIN, HIGH);
+  delay(300);
+
+  imu.settings.accelRange = 16;
+  imu.settings.accelSampleRate = 416;
+  imu.settings.accelBandWidth = 100;
+  imu.settings.gyroRange = 2000;
+  imu.settings.gyroSampleRate = 416;
+  const int status = (int)imu.begin();
+  Wire1.setClock(400000);
+  uint8_t who_am_i = 0;
+  imu.readRegister(&who_am_i, LSM6DS3_ACC_GYRO_WHO_AM_I_REG);
+  const bool snapshot_imu_ok = status == IMU_SUCCESS &&
+      (who_am_i == LSM6DS3_ACC_GYRO_WHO_AM_I || who_am_i == LSM6DS3_C_ACC_GYRO_WHO_AM_I);
+  delay(20);
+
+  const float ax = snapshot_imu_ok ? imu.readFloatAccelX() : 0.0f;
+  const float ay = snapshot_imu_ok ? imu.readFloatAccelY() : 0.0f;
+  const float az = snapshot_imu_ok ? imu.readFloatAccelZ() : 0.0f;
+  const float gx = snapshot_imu_ok ? imu.readFloatGyroX() : 0.0f;
+  const float gy = snapshot_imu_ok ? imu.readFloatGyroY() : 0.0f;
+  const float gz = snapshot_imu_ok ? imu.readFloatGyroZ() : 0.0f;
+  const float batt = battery_voltage();
+  char analog_json[48] = "";
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) {
+    if (i) strlcat(analog_json, ",", sizeof(analog_json));
+    char value[8]; snprintf(value, sizeof(value), "%d", analogRead(analog_pins[i]));
+    strlcat(analog_json, value, sizeof(analog_json));
+  }
+  imu_ok = snapshot_imu_ok;
+#if BLE_SUPPORTED
+  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, 0, 0, analog_json, 1);
+#endif
+  last_heartbeat_ms = millis();
+  if (!snapshot_imu_ok) sensor_error_count++;
+  digitalWrite(IMU_POWER_PIN, LOW);
+  digitalWrite(BATTERY_ENABLE_PIN, LOW);
+  low_power_rails_suspended = true;
 }
 
 void print_imu_status() {
@@ -797,6 +876,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       ble_connected = false;
       ble_notify_enabled = false;
       ble_vibration_notify_enabled = false;
+      if (reporting_mode == LOW_POWER_MODE) low_power_exit_pending = true;
       if (ble_database_initialized) ble_start_advertising();
       break;
     case sl_bt_evt_gatt_server_characteristic_status_id:
@@ -896,7 +976,7 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D4\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
-           "\"reporting_modes\":[\"live\",\"edge_summary\",\"event\",\"heartbeat\"]},"
+           "\"reporting_modes\":[\"live\",\"edge_summary\",\"low_power\",\"event\",\"heartbeat\"]},"
            "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
            "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true}}",
            runtime_node_id(), FIRMWARE_VERSION);
@@ -1088,6 +1168,13 @@ void loop() {
 #if BLE_SUPPORTED
   ble_initialize_when_ready();
 #endif
+  if (low_power_exit_pending) {
+    low_power_exit_pending = false;
+    exit_low_power_mode();
+    reporting_mode = EDGE_SUMMARY_MODE;
+    last_edge_sample_ms = millis();
+    last_edge_report_ms = millis();
+  }
   const uint32_t initialization_now = millis();
   if (!imu_ok && imu_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
       elapsed_since(initialization_now, last_imu_initialization_ms, IMU_RETRY_INTERVAL_MS)) {
@@ -1156,10 +1243,11 @@ void loop() {
   if (factory_reset_controller.busy()) bootstrap_only = true;
   // Vibration failure is isolated: FIFO/DSP health never gates BLE, identity,
   // provisioning, or the existing telemetry path.
-  if (!factory_reset_controller.busy()) vibration_service.service();
+  if (!factory_reset_controller.busy() && reporting_mode != LOW_POWER_MODE) vibration_service.service();
 #if BLE_SUPPORTED
   const uint32_t vibration_now = millis();
-  if (reporting_mode == LIVE_MODE || elapsed_since(vibration_now, last_edge_vibration_ms, EDGE_SUMMARY_INTERVAL_MS)) {
+  if (reporting_mode != LOW_POWER_MODE &&
+      (reporting_mode == LIVE_MODE || elapsed_since(vibration_now, last_edge_vibration_ms, EDGE_SUMMARY_INTERVAL_MS))) {
     last_edge_vibration_ms = vibration_now;
     ble_publish_vibration();
   }
@@ -1181,9 +1269,15 @@ void loop() {
       last_edge_report_ms = now;
       publish_edge_summary();
     }
+  } else if (reporting_mode == LOW_POWER_MODE &&
+      elapsed_since(now, last_low_power_report_ms, LOW_POWER_REPORT_INTERVAL_MS)) {
+    last_low_power_report_ms = now;
+    publish_low_power_snapshot();
   }
 #if BLE_SUPPORTED
-  const uint32_t heartbeat_interval = reporting_mode == EDGE_SUMMARY_MODE
+  const uint32_t heartbeat_interval = reporting_mode == LOW_POWER_MODE
+      ? LOW_POWER_REPORT_INTERVAL_MS
+      : reporting_mode == EDGE_SUMMARY_MODE
       ? max((uint32_t)EDGE_HEARTBEAT_INTERVAL_MS, microphone_runtime_config.heartbeat_interval_ms)
       : microphone_runtime_config.heartbeat_interval_ms;
   if (ble_connected && elapsed_since(now, last_heartbeat_ms, heartbeat_interval)) {
@@ -1202,4 +1296,5 @@ void loop() {
     }
   }
 #endif
+  if (reporting_mode == LOW_POWER_MODE) LowPower.sleep(LOW_POWER_SLEEP_SLICE_MS);
 }

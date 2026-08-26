@@ -267,7 +267,10 @@ function renderNodes() {
     const edgeMode = el("button", "Use Edge Summary");
     edgeMode.type = "button";
     edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); node.reporting_mode = "EDGE_SUMMARY"; batteryModeStatus.textContent = "Telemetry mode: EDGE SUMMARY"; notice(""); } catch(error) { notice(error.message); } });
-    batteryModeActions.append(liveMode, edgeMode); battery.append(batteryModeActions);
+    const lowPowerMode = el("button", "Use Low Power");
+    lowPowerMode.type = "button";
+    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
+    batteryModeActions.append(liveMode, edgeMode, lowPowerMode); battery.append(batteryModeActions);
     battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
     if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 

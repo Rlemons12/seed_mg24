@@ -27,6 +27,12 @@
       "version": "core-bundled-4.0.0",
       "required_header": "SilabsMicrophoneAnalog.h",
       "source": "SiliconLabs:silabs core"
+    },
+    {
+      "name": "ArduinoLowPower",
+      "version": "core-bundled-4.0.0",
+      "required_header": "ArduinoLowPower.h",
+      "source": "SiliconLabs:silabs core"
     }
   ]
 }

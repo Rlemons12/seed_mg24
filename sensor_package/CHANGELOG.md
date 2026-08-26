@@ -1,5 +1,11 @@
 # Sensor package changelog
 
+## 0.1.3
+
+- Add a runtime `LOW_POWER` mode using EM2-capable one-second sleep slices.
+- Power down the IMU and battery-divider rails between five-minute snapshots.
+- Pause vibration windows in low-power mode and safely return to Edge Summary after BLE disconnect or reboot.
+
 ## 0.1.2
 
 - Power-cycle only the IMU rail between bounded initialization retries.

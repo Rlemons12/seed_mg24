@@ -8,7 +8,7 @@ from gateway.app.config import Settings
 
 LED_COMMAND = re.compile(r"LED (?:ON|OFF|(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$")
 RATE_COMMAND = re.compile(r"RATE (?:[5-9][0-9]|[1-9][0-9]{2}|[1-4][0-9]{3}|5000)$")
-MODE_COMMAND = re.compile(r"MODE (?:LIVE|EDGE_SUMMARY)$")
+MODE_COMMAND = re.compile(r"MODE (?:LIVE|EDGE_SUMMARY|LOW_POWER)$")
 
 
 def validate_command(command: str) -> str:
@@ -91,6 +91,8 @@ class BleManager:
             self.reporting_modes[device_id] = "LIVE"
         elif normalized == "MODE EDGE_SUMMARY":
             self.reporting_modes[device_id] = "EDGE_SUMMARY"
+        elif normalized == "MODE LOW_POWER":
+            self.reporting_modes[device_id] = "LOW_POWER"
         return normalized
 
     async def identify(self, device_id: str) -> None:

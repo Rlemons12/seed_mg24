@@ -6,6 +6,17 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
 function time(value) { return value ? new Date(value).toLocaleString() : "Never"; }
+function updateBatteryWakeCountdowns() {
+  document.querySelectorAll(".battery-wake-status").forEach((item) => {
+    if (item.dataset.pending === "true") { item.textContent = "Go Live is queued for the next sensor wake."; return; }
+    const wakeAt = Date.parse(item.dataset.nextWakeAt || "");
+    if (!Number.isFinite(wakeAt)) { item.textContent = item.dataset.lowPower === "true" ? "Next wake time is being established." : ""; return; }
+    const remaining = Math.max(0, Math.ceil((wakeAt - Date.now()) / 1000));
+    const minutes = Math.floor(remaining / 60); const seconds = remaining % 60;
+    item.textContent = `Next low-power wake in ${minutes}:${String(seconds).padStart(2, "0")}.`;
+  });
+}
+setInterval(updateBatteryWakeCountdowns, 1000);
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
@@ -260,17 +271,25 @@ function renderNodes() {
     batteryMonitoring.append(el("p", "Open this tab to load battery runtime history.", "muted")); battery.append(batteryMonitoring);
     const batteryModeStatus = el("p", `Telemetry mode: ${(node.reporting_mode || "UNKNOWN").replaceAll("_", " ")}`, "state battery-mode-status");
     battery.append(batteryModeStatus);
+    const batteryWakeStatus = el("p", "", "muted battery-wake-status");
+    batteryWakeStatus.dataset.lowPower = String(node.reporting_mode === "LOW_POWER");
+    batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at || "";
+    batteryWakeStatus.dataset.pending = String(Boolean(node.live_on_next_wake));
+    battery.append(batteryWakeStatus); updateBatteryWakeCountdowns();
     const batteryModeActions = el("div", undefined, "actions");
     const liveMode = el("button", "Go Live");
     liveMode.type = "button";
-    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE"; notice(`${node.display_name} is now sending live telemetry.`); } catch(error) { notice(error.message); } });
+    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is now sending live telemetry.`); } catch(error) { notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
+    const liveNextWake = el("button", "Go Live on Next Wake");
+    liveNextWake.type = "button";
+    liveNextWake.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE_NEXT_WAKE"})}); node.live_on_next_wake = true; batteryWakeStatus.dataset.pending = "true"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will switch to live telemetry when its next wake is observed.`); } catch(error) { notice(error.message); } });
     const edgeMode = el("button", "Use Edge Summary");
     edgeMode.type = "button";
-    edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); node.reporting_mode = "EDGE_SUMMARY"; batteryModeStatus.textContent = "Telemetry mode: EDGE SUMMARY"; notice(""); } catch(error) { notice(error.message); } });
+    edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); node.reporting_mode = "EDGE_SUMMARY"; batteryModeStatus.textContent = "Telemetry mode: EDGE SUMMARY"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(""); } catch(error) { notice(error.message); } });
     const lowPowerMode = el("button", "Use Low Power");
     lowPowerMode.type = "button";
-    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
-    batteryModeActions.append(liveMode, edgeMode, lowPowerMode); battery.append(batteryModeActions);
+    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; node.low_power_next_wake_at = new Date(Date.now() + 300000).toISOString(); batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; batteryWakeStatus.dataset.lowPower = "true"; batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
+    batteryModeActions.append(liveMode, liveNextWake, edgeMode, lowPowerMode); battery.append(batteryModeActions);
     battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
     if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 

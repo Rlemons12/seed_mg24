@@ -1,14 +1,17 @@
 import asyncio
+import math
 import re
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 from gateway.app.ble.connection import DeviceConnection
 from gateway.app.config import Settings
 
 LED_COMMAND = re.compile(r"LED (?:ON|OFF|(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$")
 RATE_COMMAND = re.compile(r"RATE (?:[5-9][0-9]|[1-9][0-9]{2}|[1-4][0-9]{3}|5000)$")
-MODE_COMMAND = re.compile(r"MODE (?:LIVE|EDGE_SUMMARY|LOW_POWER)$")
+MODE_COMMAND = re.compile(r"MODE (?:LIVE|LIVE_NEXT_WAKE|EDGE_SUMMARY|LOW_POWER)$")
+LOW_POWER_WAKE_INTERVAL_SECONDS = 300
 
 
 def validate_command(command: str) -> str:
@@ -26,6 +29,9 @@ class BleManager:
         self.client_factory = client_factory
         self.connections: dict[str, DeviceConnection] = {}
         self.reporting_modes: dict[str, str] = {}
+        self.low_power_started_at: dict[str, datetime] = {}
+        self.live_on_next_wake: set[str] = set()
+        self._pending_live_locks: dict[str, asyncio.Lock] = {}
         self._identify_locks: dict[str, asyncio.Lock] = {}
         self.semaphore = asyncio.Semaphore(settings.max_connection_attempts)
         self._pause_lock = asyncio.Lock()
@@ -42,10 +48,17 @@ class BleManager:
         async def status(state: str, error: str | None) -> None:
             await self.status_callback(device_id, state, error)
 
+        async def telemetry(data_device_id: str, data: bytes) -> None:
+            await self.telemetry_callback(data_device_id, data)
+            if self.reporting_modes.get(data_device_id) == "LOW_POWER":
+                self.low_power_started_at[data_device_id] = datetime.now(UTC)
+            if data_device_id in self.live_on_next_wake:
+                await self._apply_live_on_next_wake(data_device_id)
+
         connection = DeviceConnection(
             device_id,
             address,
-            telemetry_callback=self.telemetry_callback,
+            telemetry_callback=telemetry,
             status_callback=status,
             connection_semaphore=self.semaphore,
             client_factory=self.client_factory,
@@ -83,17 +96,46 @@ class BleManager:
 
     async def command(self, device_id: str, command: str) -> str:
         normalized = validate_command(command)
+        if normalized == "MODE LIVE_NEXT_WAKE":
+            if device_id not in self.connections:
+                raise ConnectionError("device is not managed")
+            self.live_on_next_wake.add(device_id)
+            return normalized
         connection = self.connections.get(device_id)
         if connection is None:
             raise ConnectionError("device is not managed")
         await connection.send_command(normalized)
         if normalized == "MODE LIVE":
             self.reporting_modes[device_id] = "LIVE"
+            self.live_on_next_wake.discard(device_id)
+            self.low_power_started_at.pop(device_id, None)
         elif normalized == "MODE EDGE_SUMMARY":
             self.reporting_modes[device_id] = "EDGE_SUMMARY"
+            self.live_on_next_wake.discard(device_id)
+            self.low_power_started_at.pop(device_id, None)
         elif normalized == "MODE LOW_POWER":
             self.reporting_modes[device_id] = "LOW_POWER"
+            self.live_on_next_wake.discard(device_id)
+            self.low_power_started_at[device_id] = datetime.now(UTC)
         return normalized
+
+    async def _apply_live_on_next_wake(self, device_id: str) -> None:
+        lock = self._pending_live_locks.setdefault(device_id, asyncio.Lock())
+        if lock.locked() or device_id not in self.live_on_next_wake:
+            return
+        async with lock:
+            if device_id not in self.live_on_next_wake:
+                return
+            connection = self.connections.get(device_id)
+            if connection is None or connection.state != "connected":
+                return
+            try:
+                await connection.send_command("MODE LIVE")
+            except (ConnectionError, TimeoutError):
+                return
+            self.reporting_modes[device_id] = "LIVE"
+            self.live_on_next_wake.discard(device_id)
+            self.low_power_started_at.pop(device_id, None)
 
     async def identify(self, device_id: str) -> None:
         """Run a bounded, distinctive LED pattern and leave the indicator off."""
@@ -123,12 +165,26 @@ class BleManager:
 
     def runtime(self, device_id: str) -> dict:
         connection = self.connections.get(device_id)
+        mode = self.reporting_modes.get(device_id, "EDGE_SUMMARY" if connection else "UNKNOWN")
+        next_wake_at = None
+        seconds_to_next_wake = None
+        if mode == "LOW_POWER" and device_id in self.low_power_started_at:
+            now = datetime.now(UTC)
+            elapsed = max(0.0, (now - self.low_power_started_at[device_id]).total_seconds())
+            seconds_to_next_wake = max(1, math.ceil(LOW_POWER_WAKE_INTERVAL_SECONDS - (elapsed % LOW_POWER_WAKE_INTERVAL_SECONDS)))
+            next_wake_at = now + timedelta(seconds=seconds_to_next_wake)
+        low_power = {
+            "low_power_wake_interval_seconds": LOW_POWER_WAKE_INTERVAL_SECONDS,
+            "low_power_next_wake_at": next_wake_at,
+            "low_power_seconds_to_next_wake": seconds_to_next_wake,
+            "live_on_next_wake": device_id in self.live_on_next_wake,
+        }
         return (
             {"connection_status": connection.state, "last_error": connection.last_error,
-             "reporting_mode": self.reporting_modes.get(device_id, "EDGE_SUMMARY")}
+             "reporting_mode": mode, **low_power}
             if connection
             else {"connection_status": "disconnected", "last_error": None,
-                  "reporting_mode": self.reporting_modes.get(device_id, "UNKNOWN")}
+                  "reporting_mode": mode, **low_power}
         )
 
     async def shutdown(self) -> None:

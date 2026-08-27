@@ -86,6 +86,10 @@ class DeviceResponse(BaseModel):
     factory_reset_status: str
     last_error: str | None = None
     reporting_mode: Literal["EDGE_SUMMARY", "LIVE", "LOW_POWER", "UNKNOWN"] = "UNKNOWN"
+    low_power_wake_interval_seconds: int = 300
+    low_power_next_wake_at: datetime | None = None
+    low_power_seconds_to_next_wake: int | None = None
+    live_on_next_wake: bool = False
     rssi: int | None = None
 
 

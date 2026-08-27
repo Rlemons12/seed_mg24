@@ -6,7 +6,7 @@ from gateway.app.ble.connection import DeviceConnection, reconnect_delay
 from gateway.app.ble.manager import BleManager, validate_command
 
 
-@pytest.mark.parametrize("command", ["PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000", "MODE LIVE", "MODE EDGE_SUMMARY", "MODE LOW_POWER"])
+@pytest.mark.parametrize("command", ["PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000", "MODE LIVE", "MODE LIVE_NEXT_WAKE", "MODE EDGE_SUMMARY", "MODE LOW_POWER"])
 def test_command_allowlist(command):
     assert validate_command(command) == command
 
@@ -56,6 +56,38 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
     assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
     await manager.command("MG24-0001", "MODE LOW_POWER")
     assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
+    assert 1 <= manager.runtime("MG24-0001")["low_power_seconds_to_next_wake"] <= 300
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_on_next_wake_is_deferred_until_telemetry(settings):
+    received = []
+
+    async def telemetry(device_id, data):
+        received.append((device_id, data))
+
+    async def status(*_args):
+        pass
+
+    manager = BleManager(settings, telemetry, status)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+    sent = []
+
+    async def accept(command):
+        sent.append(command)
+
+    connection.send_command = accept
+    manager.reporting_modes["MG24-0001"] = "LOW_POWER"
+    await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
+    assert sent == []
+    assert manager.runtime("MG24-0001")["live_on_next_wake"] is True
+    await connection.telemetry_callback("MG24-0001", b"wake")
+    assert received == [("MG24-0001", b"wake")]
+    assert sent == ["MODE LIVE"]
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["live_on_next_wake"] is False
     await manager.shutdown()
 
 

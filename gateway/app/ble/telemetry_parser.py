@@ -171,6 +171,11 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
         sensor_boot_id=_boot_id(work, schema),
         sample_count=sample_count,
         received_at=received_at,
+        delayed=bool(work.get("d", False)),
+        metadata={
+            "persistent_journal": True,
+            **({"journal_age_ms": _uint32(work["jm"], "jm")} if "jm" in work else {}),
+        } if work.get("pj") == 1 else {},
         channels=channels,
         original_payload=payload,
     )

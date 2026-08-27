@@ -2,6 +2,8 @@ import asyncio
 import json
 import threading
 import time
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
@@ -102,6 +104,26 @@ async def test_high_rate_battery_channel_is_persisted_but_battery_state_writes_a
     await service.ingest("ARM2001-01", '{"t":"h","v":1,"s":1,"ms":10,"bv":4.0,"bu":0,"dr":0,"pe":0,"se":0}')
     await service.ingest("ARM2001-01", '{"t":"h","v":1,"s":2,"ms":20,"bv":3.99,"bu":0,"dr":0,"pe":0,"se":0}')
     assert battery.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_flash_journal_age_restores_measurement_time(settings):
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    factory = create_session_factory(engine)
+    with factory() as session:
+        DeviceRepository(session).create(device_id="ARM2001-01", display_name="Node")
+    service = TelemetryService(factory, RecordingWebSockets())
+    received = datetime(2026, 8, 27, 12, 0, tzinfo=UTC)
+    packet = (
+        '{"t":"tele","v":2,"id":"ARM2001-01","bid":"0123456789abcdef","s":9,"ms":1000,'
+        '"sc":5,"bv":3.9,"a":[0,0,1],"g":[0,0,0],"n":[],"d":1,"pj":1,"jm":60000}'
+    )
+    with patch("gateway.app.ble.telemetry_parser.datetime") as clock:
+        clock.now.return_value = received
+        rows = await service.ingest("ARM2001-01", packet)
+    assert rows[0].delayed is True
+    assert rows[0].measured_at == received - timedelta(seconds=60)
 
 
 @pytest.mark.asyncio

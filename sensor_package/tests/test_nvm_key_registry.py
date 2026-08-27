@@ -11,7 +11,7 @@ FW = ROOT / "sensor_package/firmware/xiao_mg24_sensor_node"
 def test_registered_keys_unique_and_in_verified_range():
     text = (FW / "application_nvm_keys.h").read_text()
     values = {name: int(value, 16) for name, value in re.findall(r"constexpr uint32_t (k\w+) = (0x[0-9A-Fa-f]+)u;", text)}
-    keys = {k: v for k, v in values.items() if "Slot" in k or k in {"kConfigurationStaging", "kStoreMetadata", "kResetTransactionMarker"}}
+    keys = {k: v for k, v in values.items() if ("Slot" in k and k != "kTelemetryJournalSlots") or k in {"kConfigurationStaging", "kStoreMetadata", "kResetTransactionMarker"}}
     assert len(keys) == len(set(keys.values()))
     assert all(0x0FF00 <= value <= 0x0FF0F for value in keys.values())
     assert all(value > 0x0028 for value in keys.values())
@@ -27,6 +27,8 @@ def test_reset_scope_is_allowlisted_and_no_broad_erase():
         "configuration_staging",
         "store_metadata",
         "reset_transaction_marker",
+        "telemetry_journal_slot_0", "telemetry_journal_slot_1", "telemetry_journal_slot_2", "telemetry_journal_slot_3",
+        "telemetry_journal_slot_4", "telemetry_journal_slot_5", "telemetry_journal_slot_6", "telemetry_journal_slot_7",
     }
     assert all(set(keys) <= registered for keys in scope["scopes"].values())
     assert scope["transaction_keys"] == ["reset_transaction_marker"]

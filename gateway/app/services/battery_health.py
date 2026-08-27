@@ -42,12 +42,17 @@ class BatteryHealthService:
         )
         if battery is None:
             return
+        if battery.delayed and battery.measured_at is None:
+            # A flash-journal record replayed after a sensor reboot has no
+            # trustworthy wall-clock anchor. Retain the Reading, but do not
+            # let it drive charge detection as though it were current.
+            return
         with self.session_factory() as session:
             device = session.scalar(select(RegisteredDevice).where(RegisteredDevice.device_id == node_id))
             if device is None:
                 return
             self._observe(
-                session, device, float(battery.normalized_value), battery.received_at,
+                session, device, float(battery.normalized_value), battery.measured_at or battery.received_at,
                 battery.sensor_boot_id, battery.record_type,
             )
             session.commit()

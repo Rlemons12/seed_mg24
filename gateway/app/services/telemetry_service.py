@@ -106,6 +106,9 @@ class TelemetryService:
         session_id, measured_at = self._session_for(
             registered_device_id, payload.device_uptime_ms, payload.received_at, payload.sensor_boot_id
         )
+        if payload.metadata.get("persistent_journal"):
+            age_ms = payload.metadata.get("journal_age_ms")
+            measured_at = payload.received_at - timedelta(milliseconds=age_ms) if age_ms is not None else None
         if payload.record_type == "vibration":
             self.vibration_counters["received"] += 1
             if payload.vibration is None:

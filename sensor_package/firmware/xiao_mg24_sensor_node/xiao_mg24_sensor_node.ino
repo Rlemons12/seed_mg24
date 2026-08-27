@@ -14,6 +14,7 @@
 #include "factory_reset.h"
 #include "node_identity_store.h"
 #include "nvm_backend.h"
+#include "persistent_telemetry_journal.h"
 #include "usb_bootstrap.h"
 #include "silabs_additional.h"
 #include "vibration_service.h"
@@ -43,6 +44,7 @@
 #define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
 #define LOW_POWER_REPORT_INTERVAL_MS 300000UL
 #define LOW_POWER_SLEEP_SLICE_MS 1000UL
+#define PERSISTENT_SUMMARY_INTERVAL_MS 60000UL
 #define IMU_RETRY_INTERVAL_MS 30000UL
 #define IMU_MAX_INITIALIZATION_ATTEMPTS 5
 
@@ -65,6 +67,7 @@ enum EdgeTelemetryMode : uint8_t { EDGE_SUMMARY_MODE = 0, LIVE_MODE = 1, LOW_POW
 EdgeTelemetryMode reporting_mode = EDGE_SUMMARY_MODE;
 uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
 uint32_t last_low_power_report_ms = 0;
+uint32_t last_persistent_summary_ms = 0;
 bool low_power_rails_suspended = false;
 volatile bool low_power_exit_pending = false;
 struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
@@ -102,6 +105,7 @@ uint16_t ble_vibration_characteristic_handle = 0;
 #endif
 char telemetry_json[512];
 char ble_json[244];
+char persistent_journal_json[320];
 char vibration_json[seed_mg24::kVibrationSummaryMaximumBytes];
 uint32_t last_vibration_summary_sequence = 0;
 char metadata_json[384];
@@ -114,11 +118,13 @@ SiliconLabsNvm3Backend application_nvm;
 NodeIdentityStore node_identity_store(application_nvm);
 PersistentConfigurationStore runtime_configuration_store(application_nvm);
 FactoryResetController factory_reset_controller(application_nvm);
+PersistentTelemetryJournal persistent_telemetry_journal(application_nvm);
 UsbBootstrapProtocol usb_bootstrap(node_identity_store, runtime_configuration_store, factory_reset_controller);
 NodeIdentity active_identity = {};
 StoreStatus identity_store_status = StoreStatus::Unprovisioned;
 StoreStatus configuration_store_status = StoreStatus::NotFound;
 StoreStatus reset_recovery_status = StoreStatus::Ok;
+StoreStatus telemetry_journal_status = StoreStatus::NotFound;
 bool bootstrap_only = true;
 bool ble_stack_ready = false;
 
@@ -449,8 +455,20 @@ void handle_command(String command) {
     String acknowledged_boot = command.substring(7, separator);
     String acknowledged_sequence = command.substring(separator + 1);
     uint32_t sequence = 0;
-    if (!acknowledged_boot.equalsIgnoreCase(telemetry_boot_id) ||
-        !parse_bounded_uint(acknowledged_sequence, 0, 0xFFFFFFFFUL, &sequence)) {
+    if (!parse_bounded_uint(acknowledged_sequence, 0, 0xFFFFFFFFUL, &sequence)) {
+      command_result(false, "invalid_ack"); return;
+    }
+    bool journal_matched = false;
+    StoreStatus journal_ack = persistent_telemetry_journal.acknowledge(
+        acknowledged_boot.c_str(), sequence, &journal_matched);
+    if (journal_ack != StoreStatus::Ok) { command_result(false, store_status_name(journal_ack)); return; }
+    if (journal_matched) {
+#if BLE_SUPPORTED
+      ble_send_oldest_buffered();
+#endif
+      return;
+    }
+    if (!acknowledged_boot.equalsIgnoreCase(telemetry_boot_id)) {
       command_result(false, "invalid_ack"); return;
     }
     offline_buffer.acknowledge_through(sequence);
@@ -792,6 +810,7 @@ void setup() {
     identity_store_status = node_identity_store.load(&active_identity);
     StoredChannelConfiguration stored = {};
     configuration_store_status = runtime_configuration_store.load(&stored);
+    telemetry_journal_status = persistent_telemetry_journal.initialize();
     if (configuration_store_status == StoreStatus::Ok || configuration_store_status == StoreStatus::RecoveredFromPrevious) {
       microphone_runtime_config.sample_interval_ms = stored.sample_interval_ms;
       microphone_runtime_config.processing_interval_ms = stored.processing_interval_ms;
@@ -805,6 +824,7 @@ void setup() {
   } else {
     identity_store_status = nvm_status;
     configuration_store_status = nvm_status;
+    telemetry_journal_status = nvm_status;
   }
   const bool identity_valid = identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious;
   const bool configuration_valid = configuration_store_status == StoreStatus::Ok
@@ -871,6 +891,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
       ble_connected = true;
+      persistent_telemetry_journal.discard_staging();
       break;
     case sl_bt_evt_connection_closed_id:
       ble_connection_handle = 0xff;
@@ -883,6 +904,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_gatt_server_characteristic_status_id:
       if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_telemetry_characteristic_handle) {
         ble_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
+        if (ble_notify_enabled) ble_send_oldest_buffered();
       } else if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_vibration_characteristic_handle) {
         ble_vibration_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
       }
@@ -979,7 +1001,8 @@ void ble_initialize_gatt_db() {
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
            "\"reporting_modes\":[\"live\",\"edge_summary\",\"low_power\",\"event\",\"heartbeat\"]},"
            "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
-           "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true}}",
+           "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true,"
+           "\"flash_journal\":true,\"flash_summary_interval_seconds\":60,\"flash_summary_capacity\":32,\"flash_batch_size\":4}}",
            runtime_node_id(), FIRMWARE_VERSION);
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_READ,
@@ -1083,10 +1106,12 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
     return;
   }
 
+  const uint32_t record_sequence = telemetry_sequence++;
+  const uint32_t record_uptime = millis();
   int written = snprintf(ble_json, sizeof(ble_json),
            "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,\"io\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
-           runtime_node_id(), telemetry_boot_id, (unsigned long)telemetry_sequence++, millis(),
+           runtime_node_id(), telemetry_boot_id, (unsigned long)record_sequence, (unsigned long)record_uptime,
            (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness, imu_ok ? 1 : 0,
            ax, ay, az, gx, gy, gz, analog_json);
   if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
@@ -1098,15 +1123,44 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
 
   TelemetryRecord record = {};
   record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
-  record.sequence_number = telemetry_sequence - 1; record.uptime_ms = millis();
+  record.sequence_number = record_sequence; record.uptime_ms = record_uptime;
   strlcpy(record.payload, current_telemetry, sizeof(record.payload));
   offline_buffer.push(record);
+  if (!ble_connected && elapsed_since(record_uptime, last_persistent_summary_ms, PERSISTENT_SUMMARY_INTERVAL_MS)) {
+    last_persistent_summary_ms = record_uptime;
+    PersistentTelemetrySummary summary = {};
+    strlcpy(summary.boot_id, telemetry_boot_id, sizeof(summary.boot_id));
+    summary.sequence_number = record_sequence; summary.uptime_ms = record_uptime;
+    summary.battery_voltage = batt; summary.sample_count = (uint16_t)min((uint32_t)0xFFFF, max(1UL, sample_count));
+    summary.flags = imu_ok ? 1 : 0;
+    summary.acceleration[0] = ax; summary.acceleration[1] = ay; summary.acceleration[2] = az;
+    summary.angular_velocity[0] = gx; summary.angular_velocity[1] = gy; summary.angular_velocity[2] = gz;
+    StoreStatus stored = persistent_telemetry_journal.append(summary);
+    if (stored != StoreStatus::Ok) processing_error_count++;
+  }
   ble_send_oldest_buffered();
   microphone_channel.mark_reported(millis());
 }
 
 bool ble_send_oldest_buffered() {
   if (!ble_connected || !ble_notify_enabled) return false;
+  PersistentTelemetrySummary summary = {};
+  if (persistent_telemetry_journal.peek(&summary)) {
+    const bool same_boot = !strcmp(summary.boot_id, telemetry_boot_id);
+    const uint32_t replay_age_ms = same_boot ? millis() - summary.uptime_ms : 0;
+    const char* age_prefix = same_boot ? ",\"jm\":" : "";
+    char age_value[16] = "";
+    if (same_boot) snprintf(age_value, sizeof(age_value), "%lu", (unsigned long)replay_age_ms);
+    int written = snprintf(persistent_journal_json, sizeof(persistent_journal_json),
+        "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%u,\"bv\":%.3f,\"io\":%d,"
+        "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[],\"d\":1,\"pj\":1%s%s}",
+        runtime_node_id(), summary.boot_id, (unsigned long)summary.sequence_number,
+        (unsigned long)summary.uptime_ms, summary.sample_count, summary.battery_voltage,
+        summary.flags & 1, summary.acceleration[0], summary.acceleration[1], summary.acceleration[2],
+        summary.angular_velocity[0], summary.angular_velocity[1], summary.angular_velocity[2], age_prefix, age_value);
+    if (written <= 0 || (size_t)written >= sizeof(persistent_journal_json)) { processing_error_count++; return false; }
+    return ble_send_payload(persistent_journal_json);
+  }
   TelemetryRecord record = {};
   return offline_buffer.peek_oldest(&record) && ble_send_payload(record.payload);
 }

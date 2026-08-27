@@ -5,10 +5,11 @@
 #include "factory_reset.h"
 #include "node_identity_store.h"
 #include "persistent_record.h"
+#include "persistent_telemetry_journal.h"
 
 class FakeNvm : public NvmBackend {
  public:
-  struct Entry { uint32_t key; uint8_t data[kPersistentMaxRecord]; size_t size; bool used; } entries[16];
+  struct Entry { uint32_t key; uint8_t data[512]; size_t size; bool used; } entries[32];
   bool fail_write=false,fail_read=false,fail_remove=false;
   uint32_t fail_write_key=0,fail_remove_key=0;
   FakeNvm(){memset(entries,0,sizeof(entries));}
@@ -19,6 +20,10 @@ class FakeNvm : public NvmBackend {
   StoreStatus remove(uint32_t key) override{if(fail_remove||key==fail_remove_key)return StoreStatus::WriteFailed;Entry*e=find(key);if(e)e->used=false;return StoreStatus::Ok;}
 };
 static StoredChannelConfiguration valid_config(){StoredChannelConfiguration x={};x.sample_interval_ms=100;x.processing_interval_ms=100;x.report_interval_ms=100;x.heartbeat_interval_ms=30000;x.filter_type=0;x.filter_window=1;x.enabled=1;return x;}
+static PersistentTelemetrySummary summary(uint32_t sequence){
+  PersistentTelemetrySummary x={};strcpy(x.boot_id,"0123456789abcdef");x.sequence_number=sequence;x.uptime_ms=sequence*60000;
+  x.battery_voltage=4.0f-sequence*0.001f;x.acceleration[2]=1.0f;x.sample_count=600; x.flags=1;return x;
+}
 static void write_reset_marker(FakeNvm& nvm,const char* operation,ResetStage stage){
   uint8_t payload[35]={1,static_cast<uint8_t>(stage),32};memcpy(payload+3,operation,32);
   uint8_t record[kPersistentMaxRecord];size_t size=0;
@@ -108,5 +113,29 @@ int main(){
   NodeIdentityStore reprovisioned_ids(reprovisioned_nvm);NodeIdentity reprovisioned_identity={};
   assert(reprovisioned_ids.provision("MG24-NEW",&reprovisioned_identity)==StoreStatus::Ok);
   assert(!strcmp(reprovisioned_identity.node_id,"MG24-NEW"));
+
+  // Persistent telemetry writes one four-summary batch, survives restart, and
+  // removes flash only after the whole batch has been durably acknowledged.
+  FakeNvm journal_nvm;PersistentTelemetryJournal journal(journal_nvm);
+  assert(journal.initialize()==StoreStatus::Ok);
+  for(uint32_t sequence=1;sequence<=3;sequence++)assert(journal.append(summary(sequence))==StoreStatus::Ok);
+  assert(journal.persisted_count()==0&&journal.staged_count()==3);
+  assert(journal.append(summary(4))==StoreStatus::Ok&&journal.persisted_count()==4&&journal.staged_count()==0);
+  PersistentTelemetryJournal restarted_journal(journal_nvm);assert(restarted_journal.initialize()==StoreStatus::Ok);
+  PersistentTelemetrySummary replay={};assert(restarted_journal.peek(&replay)&&replay.sequence_number==1);
+  bool matched=false;assert(restarted_journal.acknowledge("FEDCBA9876543210",1,&matched)==StoreStatus::Ok&&!matched);
+  assert(restarted_journal.acknowledge("0123456789ABCDEF",3,&matched)==StoreStatus::Ok&&matched);
+  PersistentTelemetryJournal partial_restart(journal_nvm);assert(partial_restart.initialize()==StoreStatus::Ok);
+  assert(partial_restart.peek(&replay)&&replay.sequence_number==1); // safe duplicate replay after power loss
+  for(uint32_t sequence=1;sequence<=4;sequence++)assert(partial_restart.acknowledge("0123456789abcdef",sequence,&matched)==StoreStatus::Ok&&matched);
+  assert(partial_restart.persisted_count()==0);
+
+  // Eight rotating objects retain 32 summaries and then discard the oldest batch.
+  PersistentTelemetryJournal bounded(journal_nvm);assert(bounded.initialize()==StoreStatus::Ok);
+  for(uint32_t sequence=100;sequence<136;sequence++)assert(bounded.append(summary(sequence))==StoreStatus::Ok);
+  assert(bounded.persisted_count()==32);
+  for(uint32_t sequence=136;sequence<140;sequence++)assert(bounded.append(summary(sequence))==StoreStatus::Ok);
+  assert(bounded.persisted_count()==32&&bounded.dropped_count()==4);
+  assert(bounded.peek(&replay)&&replay.sequence_number==104);
   return 0;
 }

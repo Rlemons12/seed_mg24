@@ -1,5 +1,12 @@
 # Sensor package changelog
 
+## 0.1.4
+
+- Add an NVM3-backed circular telemetry-summary journal for gateway outages.
+- Batch four one-minute summaries per flash object and retain up to 32 summaries.
+- Replay oldest-first and erase a batch only after SQLite persistence acknowledgement.
+- Preserve replay identity across sensor restarts without fabricating unknown wall-clock measurement time.
+
 ## 0.1.3
 
 - Add a runtime `LOW_POWER` mode using EM2-capable one-second sleep slices.

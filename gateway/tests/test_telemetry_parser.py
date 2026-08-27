@@ -92,6 +92,15 @@ def test_parses_ack_capable_v2_identity_and_sample_count():
     assert result.sequence_number == 9 and result.sample_count == 5
 
 
+def test_parses_persistent_journal_replay_as_delayed_with_bounded_age():
+    result = parse_telemetry(
+        '{"t":"tele","v":2,"id":"MG24-1","bid":"0123456789abcdef","s":9,"ms":1000,'
+        '"sc":5,"bv":3.9,"a":[0,0,1],"g":[0,0,0],"n":[],"d":1,"pj":1,"jm":60000}'
+    )
+    assert result.delayed is True
+    assert result.metadata == {"persistent_journal": True, "journal_age_ms": 60000}
+
+
 @pytest.mark.parametrize("payload", [
     '{"t":"m","v":2,"id":"MG24-1","s":1,"c":"x","rv":1}',
     '{"t":"m","v":2,"id":"MG24-1","bid":"ABCDEF0123456789","s":1,"c":"x","rv":1}',

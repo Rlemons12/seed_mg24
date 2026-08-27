@@ -90,6 +90,8 @@ class DeviceResponse(BaseModel):
     low_power_next_wake_at: datetime | None = None
     low_power_seconds_to_next_wake: int | None = None
     live_on_next_wake: bool = False
+    live_mode_ends_at: datetime | None = None
+    edge_summary_on_next_wake: bool = False
     rssi: int | None = None
 
 

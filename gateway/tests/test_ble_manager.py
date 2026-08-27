@@ -6,7 +6,10 @@ from gateway.app.ble.connection import DeviceConnection, reconnect_delay
 from gateway.app.ble.manager import BleManager, validate_command
 
 
-@pytest.mark.parametrize("command", ["PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000", "MODE LIVE", "MODE LIVE_NEXT_WAKE", "MODE EDGE_SUMMARY", "MODE LOW_POWER"])
+@pytest.mark.parametrize("command", [
+    "PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000",
+    "MODE LIVE", "MODE LIVE_NEXT_WAKE", "MODE EDGE_SUMMARY", "MODE LOW_POWER",
+])
 def test_command_allowlist(command):
     assert validate_command(command) == command
 
@@ -57,6 +60,32 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
     await manager.command("MG24-0001", "MODE LOW_POWER")
     assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
     assert 1 <= manager.runtime("MG24-0001")["low_power_seconds_to_next_wake"] <= 300
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_live_mode_automatically_returns_to_edge_summary(settings, monkeypatch):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+    sent = []
+
+    async def accept(command):
+        sent.append(command)
+
+    async def no_delay(_seconds):
+        pass
+
+    connection.send_command = accept
+    monkeypatch.setattr("gateway.app.ble.manager.asyncio.sleep", no_delay)
+    manager.reporting_modes["MG24-0001"] = "LIVE"
+    await manager._expire_live_mode("MG24-0001")
+    assert sent == ["MODE EDGE_SUMMARY"]
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
+    assert manager.runtime("MG24-0001")["live_mode_ends_at"] is None
     await manager.shutdown()
 
 

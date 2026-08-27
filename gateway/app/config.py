@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     history_max_days: int = Field(31, ge=1, le=366)
     history_retention_days: int | None = Field(default=None, ge=1, le=36500)
     history_retention_batch_size: int = Field(1000, ge=100, le=10000)
+    sqlite_wal_checkpoint_interval_seconds: float = Field(300.0, ge=30, le=86400)
+    live_mode_max_seconds: float = Field(600.0, ge=30, le=86400)
     vibration_baseline_minimum_windows: int = Field(100, ge=20, le=10000)
     vibration_condition_persistence_windows: int = Field(3, ge=1, le=100)
     vibration_persistence_interval_seconds: float = Field(5.0, ge=0.5, le=3600)

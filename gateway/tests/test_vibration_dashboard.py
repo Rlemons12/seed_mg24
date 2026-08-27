@@ -212,6 +212,7 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert 'el("button", "Go Live on Next Wake")' in app
     assert 'command:"MODE LIVE_NEXT_WAKE"' in app
     assert "Next low-power wake in" in app
+    assert "return to Edge Summary automatically" in app
     assert "vibration windows are paused" in app
     assert ".live-input-grid--compact" in css
 

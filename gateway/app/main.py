@@ -31,6 +31,7 @@ from gateway.app.ble.manager import BleManager
 from gateway.app.ble.scanner import BleScannerService
 from gateway.app.config import Settings, get_settings
 from gateway.app.database import (
+    checkpoint_sqlite,
     create_database_engine,
     create_session_factory,
     get_session,
@@ -154,9 +155,20 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 except Exception:
                     logger.exception("Telemetry retention cleanup failed; local acquisition remains active")
                     deleted = 0
-                await asyncio.sleep(5 if deleted == settings.history_retention_batch_size else 21600)
+                await asyncio.sleep(5 if deleted > 0 else 21600)
+
+        async def checkpoint_loop() -> None:
+            while True:
+                await asyncio.sleep(settings.sqlite_wal_checkpoint_interval_seconds)
+                try:
+                    result = await asyncio.to_thread(checkpoint_sqlite, engine)
+                    if result is not None and result[0]:
+                        logger.warning("SQLite passive checkpoint remained busy: %s", result)
+                except Exception:
+                    logger.exception("SQLite passive checkpoint failed; local acquisition remains active")
 
         retention_task = asyncio.create_task(retention_loop()) if settings.history_retention_days is not None else None
+        checkpoint_task = asyncio.create_task(checkpoint_loop())
         with session_factory() as session:
             for device in DeviceRepository(session).list():
                 if device.enabled and device.ble_address:
@@ -168,6 +180,9 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 retention_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await retention_task
+            checkpoint_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await checkpoint_task
             await manager.shutdown()
             engine.dispose()
             if settings.gateway_instance_lock:

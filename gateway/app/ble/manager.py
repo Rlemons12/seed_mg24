@@ -31,6 +31,9 @@ class BleManager:
         self.reporting_modes: dict[str, str] = {}
         self.low_power_started_at: dict[str, datetime] = {}
         self.live_on_next_wake: set[str] = set()
+        self.edge_summary_on_next_wake: set[str] = set()
+        self.live_mode_ends_at: dict[str, datetime] = {}
+        self._live_mode_tasks: dict[str, asyncio.Task] = {}
         self._pending_live_locks: dict[str, asyncio.Lock] = {}
         self._identify_locks: dict[str, asyncio.Lock] = {}
         self.semaphore = asyncio.Semaphore(settings.max_connection_attempts)
@@ -38,6 +41,8 @@ class BleManager:
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
         self.reporting_modes.setdefault(device_id, "EDGE_SUMMARY")
+        if self.reporting_modes[device_id] == "LIVE" and device_id not in self._live_mode_tasks:
+            self._schedule_live_mode_timeout(device_id)
         existing = self.connections.get(device_id)
         if existing is not None:
             if existing.address != address:
@@ -54,6 +59,8 @@ class BleManager:
                 self.low_power_started_at[data_device_id] = datetime.now(UTC)
             if data_device_id in self.live_on_next_wake:
                 await self._apply_live_on_next_wake(data_device_id)
+            if data_device_id in self.edge_summary_on_next_wake:
+                await self._apply_edge_summary_on_next_wake(data_device_id)
 
         connection = DeviceConnection(
             device_id,
@@ -77,6 +84,8 @@ class BleManager:
             await connection.disconnect()
 
     async def remove(self, device_id: str) -> None:
+        self._cancel_live_mode_timeout(device_id)
+        self.edge_summary_on_next_wake.discard(device_id)
         connection = self.connections.pop(device_id, None)
         if connection:
             await connection.stop()
@@ -108,15 +117,21 @@ class BleManager:
         if normalized == "MODE LIVE":
             self.reporting_modes[device_id] = "LIVE"
             self.live_on_next_wake.discard(device_id)
+            self.edge_summary_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
+            self._schedule_live_mode_timeout(device_id)
         elif normalized == "MODE EDGE_SUMMARY":
             self.reporting_modes[device_id] = "EDGE_SUMMARY"
             self.live_on_next_wake.discard(device_id)
+            self.edge_summary_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
+            self._cancel_live_mode_timeout(device_id)
         elif normalized == "MODE LOW_POWER":
             self.reporting_modes[device_id] = "LOW_POWER"
             self.live_on_next_wake.discard(device_id)
+            self.edge_summary_on_next_wake.discard(device_id)
             self.low_power_started_at[device_id] = datetime.now(UTC)
+            self._cancel_live_mode_timeout(device_id)
         return normalized
 
     async def _apply_live_on_next_wake(self, device_id: str) -> None:
@@ -136,6 +151,50 @@ class BleManager:
             self.reporting_modes[device_id] = "LIVE"
             self.live_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
+            self._schedule_live_mode_timeout(device_id)
+
+    def _cancel_live_mode_timeout(self, device_id: str) -> None:
+        self.live_mode_ends_at.pop(device_id, None)
+        task = self._live_mode_tasks.pop(device_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _schedule_live_mode_timeout(self, device_id: str) -> None:
+        self._cancel_live_mode_timeout(device_id)
+        self.live_mode_ends_at[device_id] = datetime.now(UTC) + timedelta(seconds=self.settings.live_mode_max_seconds)
+        self._live_mode_tasks[device_id] = asyncio.create_task(
+            self._expire_live_mode(device_id), name=f"live-timeout-{device_id}"
+        )
+
+    async def _expire_live_mode(self, device_id: str) -> None:
+        await asyncio.sleep(self.settings.live_mode_max_seconds)
+        if self.reporting_modes.get(device_id) != "LIVE":
+            return
+        connection = self.connections.get(device_id)
+        if connection is not None and connection.state == "connected":
+            try:
+                await connection.send_command("MODE EDGE_SUMMARY")
+            except (ConnectionError, TimeoutError):
+                self.edge_summary_on_next_wake.add(device_id)
+                return
+            self.reporting_modes[device_id] = "EDGE_SUMMARY"
+            self.live_mode_ends_at.pop(device_id, None)
+            return
+        self.edge_summary_on_next_wake.add(device_id)
+
+    async def _apply_edge_summary_on_next_wake(self, device_id: str) -> None:
+        if device_id not in self.edge_summary_on_next_wake:
+            return
+        connection = self.connections.get(device_id)
+        if connection is None or connection.state != "connected":
+            return
+        try:
+            await connection.send_command("MODE EDGE_SUMMARY")
+        except (ConnectionError, TimeoutError):
+            return
+        self.reporting_modes[device_id] = "EDGE_SUMMARY"
+        self.edge_summary_on_next_wake.discard(device_id)
+        self._cancel_live_mode_timeout(device_id)
 
     async def identify(self, device_id: str) -> None:
         """Run a bounded, distinctive LED pattern and leave the indicator off."""
@@ -178,6 +237,8 @@ class BleManager:
             "low_power_next_wake_at": next_wake_at,
             "low_power_seconds_to_next_wake": seconds_to_next_wake,
             "live_on_next_wake": device_id in self.live_on_next_wake,
+            "live_mode_ends_at": self.live_mode_ends_at.get(device_id),
+            "edge_summary_on_next_wake": device_id in self.edge_summary_on_next_wake,
         }
         return (
             {"connection_status": connection.state, "last_error": connection.last_error,
@@ -188,5 +249,10 @@ class BleManager:
         )
 
     async def shutdown(self) -> None:
+        for task in self._live_mode_tasks.values():
+            task.cancel()
+        if self._live_mode_tasks:
+            await asyncio.gather(*self._live_mode_tasks.values(), return_exceptions=True)
+        self._live_mode_tasks.clear()
         await asyncio.gather(*(connection.stop() for connection in list(self.connections.values())), return_exceptions=True)
         self.connections.clear()

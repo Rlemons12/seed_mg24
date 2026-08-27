@@ -29,6 +29,18 @@ def create_database_engine(settings: Settings) -> Engine:
     return engine
 
 
+def checkpoint_sqlite(engine: Engine, mode: str = "PASSIVE") -> tuple[int, int, int] | None:
+    """Bound WAL growth without blocking active acquisition or compacting pages."""
+    normalized = mode.upper()
+    if normalized not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
+        raise ValueError("unsupported SQLite checkpoint mode")
+    if engine.dialect.name != "sqlite":
+        return None
+    with engine.connect() as connection:
+        row = connection.exec_driver_sql(f"PRAGMA wal_checkpoint({normalized})").one()
+    return int(row[0]), int(row[1]), int(row[2])
+
+
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)
 

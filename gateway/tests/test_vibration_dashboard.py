@@ -108,6 +108,13 @@ def test_history_ranges_are_utc_ordered_across_timezones_boundaries_and_dst():
     assert result["naiveUtc"] == result["explicitUtc"]
 
 
+def test_vibration_dashboard_offers_a_24_hour_history_range():
+    source = (STATIC / "vibration_monitoring.js").read_text()
+    app = (STATIC / "app.js").read_text()
+    assert '"24h": 86400' in source
+    assert '["24h", "24 hours"]' in app
+
+
 def test_future_incremental_anchor_is_blocked_before_history_api_call():
     module = (STATIC / "vibration_monitoring.js").as_posix()
     result = run_node(f"""
@@ -212,7 +219,7 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert 'el("button", "Go Live on Next Wake")' in app
     assert 'command:"MODE LIVE_NEXT_WAKE"' in app
     assert "Next low-power wake in" in app
-    assert "return to Edge Summary automatically" in app
+    assert "return to Low Power automatically" in app
     assert "vibration windows are paused" in app
     assert ".live-input-grid--compact" in css
 

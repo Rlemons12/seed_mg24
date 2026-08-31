@@ -10,7 +10,7 @@
   const cache = new Map();
   const inflight = new Map();
   const views = new WeakMap();
-  const RANGE_SECONDS = { "15m": 900, "1h": 3600, "6h": 21600 };
+  const RANGE_SECONDS = { "15m": 900, "1h": 3600, "6h": 21600, "24h": 86400 };
   const METRICS = {
     rms: { label: "RMS", unit: "g", field: "accel_rms_{axis}_g", definition: "Overall dynamic vibration level during one measurement window.", calculation: "After first-order high-pass conditioning removes gravity/DC, RMS = √(Σx²/N) for the selected acceleration axis.", significance: "A persistent increase from baseline means vibration is stronger than this sensor normally observes.", limitation: "Relative condition data; not calibrated ISO vibration severity." },
     peak: { label: "Peak", unit: "g", field: "accel_peak_{axis}_g", definition: "Largest absolute dynamic acceleration in one measurement window.", calculation: "After high-pass conditioning, Peak = max(|x|) for the selected axis.", significance: "Highlights short strong events that may not greatly raise RMS; rising peak with stable RMS indicates more impulsive behavior." },

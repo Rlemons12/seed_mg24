@@ -63,13 +63,12 @@ uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
 char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
-enum EdgeTelemetryMode : uint8_t { EDGE_SUMMARY_MODE = 0, LIVE_MODE = 1, LOW_POWER_MODE = 2 };
-EdgeTelemetryMode reporting_mode = EDGE_SUMMARY_MODE;
+enum TelemetryMode : uint8_t { LIVE_MODE = 0, LOW_POWER_MODE = 1 };
+TelemetryMode reporting_mode = LOW_POWER_MODE;
 uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
 uint32_t last_low_power_report_ms = 0;
 uint32_t last_persistent_summary_ms = 0;
 bool low_power_rails_suspended = false;
-volatile bool low_power_exit_pending = false;
 struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
@@ -525,13 +524,6 @@ void handle_command(String command) {
     reporting_mode = LIVE_MODE;
     memset(&edge, 0, sizeof(edge));
     command_result(true, "mode_live");
-  } else if (command == "MODE EDGE_SUMMARY") {
-    exit_low_power_mode();
-    reporting_mode = EDGE_SUMMARY_MODE;
-    memset(&edge, 0, sizeof(edge));
-    last_edge_sample_ms = millis();
-    last_edge_report_ms = millis();
-    command_result(true, "mode_edge_summary");
   } else if (command == "MODE LOW_POWER") {
     reporting_mode = LOW_POWER_MODE;
     enter_low_power_mode();
@@ -878,6 +870,7 @@ void setup() {
   update_led();
   Serial.println("{\"type\":\"hello\",\"board\":\"Seeed Studio XIAO MG24 Sense\",\"baud\":115200}");
   application_setup_complete = true;
+  enter_low_power_mode();
 }
 
 #if BLE_SUPPORTED
@@ -898,7 +891,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       ble_connected = false;
       ble_notify_enabled = false;
       ble_vibration_notify_enabled = false;
-      if (reporting_mode == LOW_POWER_MODE) low_power_exit_pending = true;
       if (ble_database_initialized) ble_start_advertising();
       break;
     case sl_bt_evt_gatt_server_characteristic_status_id:
@@ -999,7 +991,7 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D4\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
-           "\"reporting_modes\":[\"live\",\"edge_summary\",\"low_power\",\"event\",\"heartbeat\"]},"
+           "\"reporting_modes\":[\"live\",\"low_power\"]},"
            "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
            "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true,"
            "\"flash_journal\":true,\"flash_summary_interval_seconds\":60,\"flash_summary_capacity\":32,\"flash_batch_size\":4}}",
@@ -1223,13 +1215,6 @@ void loop() {
 #if BLE_SUPPORTED
   ble_initialize_when_ready();
 #endif
-  if (low_power_exit_pending) {
-    low_power_exit_pending = false;
-    exit_low_power_mode();
-    reporting_mode = EDGE_SUMMARY_MODE;
-    last_edge_sample_ms = millis();
-    last_edge_report_ms = millis();
-  }
   const uint32_t initialization_now = millis();
   if (!imu_ok && imu_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
       elapsed_since(initialization_now, last_imu_initialization_ms, IMU_RETRY_INTERVAL_MS)) {
@@ -1301,8 +1286,7 @@ void loop() {
   if (!factory_reset_controller.busy() && reporting_mode != LOW_POWER_MODE) vibration_service.service();
 #if BLE_SUPPORTED
   const uint32_t vibration_now = millis();
-  if (reporting_mode != LOW_POWER_MODE &&
-      (reporting_mode == LIVE_MODE || elapsed_since(vibration_now, last_edge_vibration_ms, EDGE_SUMMARY_INTERVAL_MS))) {
+  if (reporting_mode == LIVE_MODE) {
     last_edge_vibration_ms = vibration_now;
     ble_publish_vibration();
   }
@@ -1315,15 +1299,6 @@ void loop() {
       elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
     last_sample_ms = now;
     print_telemetry();
-  } else if (reporting_mode == EDGE_SUMMARY_MODE) {
-    if (elapsed_since(now, last_edge_sample_ms, microphone_runtime_config.sample_interval_ms)) {
-      last_edge_sample_ms = now;
-      capture_edge_sample();
-    }
-    if (elapsed_since(now, last_edge_report_ms, EDGE_SUMMARY_INTERVAL_MS)) {
-      last_edge_report_ms = now;
-      publish_edge_summary();
-    }
   } else if (reporting_mode == LOW_POWER_MODE &&
       elapsed_since(now, last_low_power_report_ms, LOW_POWER_REPORT_INTERVAL_MS)) {
     last_low_power_report_ms = now;
@@ -1332,8 +1307,6 @@ void loop() {
 #if BLE_SUPPORTED
   const uint32_t heartbeat_interval = reporting_mode == LOW_POWER_MODE
       ? LOW_POWER_REPORT_INTERVAL_MS
-      : reporting_mode == EDGE_SUMMARY_MODE
-      ? max((uint32_t)EDGE_HEARTBEAT_INTERVAL_MS, microphone_runtime_config.heartbeat_interval_ms)
       : microphone_runtime_config.heartbeat_interval_ms;
   if (ble_connected && elapsed_since(now, last_heartbeat_ms, heartbeat_interval)) {
     last_heartbeat_ms = now;

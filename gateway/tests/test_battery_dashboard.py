@@ -32,3 +32,10 @@ def test_battery_dashboard_uses_existing_dom_and_inline_svg_only():
     assert 'createElementNS("http://www.w3.org/2000/svg"' in source
     assert "Chart.js" not in source
     assert "battery-cycle-table" in source
+
+
+def test_wake_telemetry_refreshes_an_open_battery_tab():
+    app = (ROOT / "static" / "app.js").read_text()
+    assert "pendingBatteryRefreshIds.add(message.device_id)" in app
+    assert "message.data?.channels?.battery_voltage" in app
+    assert "MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api, true)" in app

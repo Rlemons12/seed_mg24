@@ -24,11 +24,12 @@ def test_low_power_mode_gates_sensor_rails_and_vibration_work():
     assert "digitalWrite(IMU_POWER_PIN, HIGH)" in snapshot
     assert "digitalWrite(BATTERY_ENABLE_PIN, HIGH)" in snapshot
     assert "reporting_mode != LOW_POWER_MODE) vibration_service.service()" in source
-    assert "if (reporting_mode == LOW_POWER_MODE) low_power_exit_pending = true" in source
+    assert "application_setup_complete = true;\n  enter_low_power_mode();" in source
 
 
 def test_low_power_mode_is_advertised_and_runtime_only():
     source = FIRMWARE.read_text(encoding="utf-8")
     assert '\\"low_power\\"' in source
-    assert "reporting_mode = EDGE_SUMMARY_MODE" in source
-    assert "low_power_exit_pending" in source
+    assert "TelemetryMode reporting_mode = LOW_POWER_MODE" in source
+    assert 'command == "MODE EDGE_SUMMARY"' not in source
+    assert "low_power_exit_pending" not in source

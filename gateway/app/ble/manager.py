@@ -10,7 +10,7 @@ from gateway.app.config import Settings
 
 LED_COMMAND = re.compile(r"LED (?:ON|OFF|(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$")
 RATE_COMMAND = re.compile(r"RATE (?:[5-9][0-9]|[1-9][0-9]{2}|[1-4][0-9]{3}|5000)$")
-MODE_COMMAND = re.compile(r"MODE (?:LIVE|LIVE_NEXT_WAKE|EDGE_SUMMARY|LOW_POWER)$")
+MODE_COMMAND = re.compile(r"MODE (?:LIVE|LIVE_NEXT_WAKE|LOW_POWER)$")
 LOW_POWER_WAKE_INTERVAL_SECONDS = 300
 
 
@@ -31,7 +31,7 @@ class BleManager:
         self.reporting_modes: dict[str, str] = {}
         self.low_power_started_at: dict[str, datetime] = {}
         self.live_on_next_wake: set[str] = set()
-        self.edge_summary_on_next_wake: set[str] = set()
+        self.low_power_on_next_wake: set[str] = set()
         self.live_mode_ends_at: dict[str, datetime] = {}
         self._live_mode_tasks: dict[str, asyncio.Task] = {}
         self._pending_live_locks: dict[str, asyncio.Lock] = {}
@@ -40,7 +40,7 @@ class BleManager:
         self._pause_lock = asyncio.Lock()
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
-        self.reporting_modes.setdefault(device_id, "EDGE_SUMMARY")
+        self.reporting_modes.setdefault(device_id, "LOW_POWER")
         if self.reporting_modes[device_id] == "LIVE" and device_id not in self._live_mode_tasks:
             self._schedule_live_mode_timeout(device_id)
         existing = self.connections.get(device_id)
@@ -59,8 +59,8 @@ class BleManager:
                 self.low_power_started_at[data_device_id] = datetime.now(UTC)
             if data_device_id in self.live_on_next_wake:
                 await self._apply_live_on_next_wake(data_device_id)
-            if data_device_id in self.edge_summary_on_next_wake:
-                await self._apply_edge_summary_on_next_wake(data_device_id)
+            if data_device_id in self.low_power_on_next_wake:
+                await self._apply_low_power_on_next_wake(data_device_id)
 
         connection = DeviceConnection(
             device_id,
@@ -85,7 +85,7 @@ class BleManager:
 
     async def remove(self, device_id: str) -> None:
         self._cancel_live_mode_timeout(device_id)
-        self.edge_summary_on_next_wake.discard(device_id)
+        self.low_power_on_next_wake.discard(device_id)
         connection = self.connections.pop(device_id, None)
         if connection:
             await connection.stop()
@@ -117,19 +117,13 @@ class BleManager:
         if normalized == "MODE LIVE":
             self.reporting_modes[device_id] = "LIVE"
             self.live_on_next_wake.discard(device_id)
-            self.edge_summary_on_next_wake.discard(device_id)
+            self.low_power_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
             self._schedule_live_mode_timeout(device_id)
-        elif normalized == "MODE EDGE_SUMMARY":
-            self.reporting_modes[device_id] = "EDGE_SUMMARY"
-            self.live_on_next_wake.discard(device_id)
-            self.edge_summary_on_next_wake.discard(device_id)
-            self.low_power_started_at.pop(device_id, None)
-            self._cancel_live_mode_timeout(device_id)
         elif normalized == "MODE LOW_POWER":
             self.reporting_modes[device_id] = "LOW_POWER"
             self.live_on_next_wake.discard(device_id)
-            self.edge_summary_on_next_wake.discard(device_id)
+            self.low_power_on_next_wake.discard(device_id)
             self.low_power_started_at[device_id] = datetime.now(UTC)
             self._cancel_live_mode_timeout(device_id)
         return normalized
@@ -173,27 +167,29 @@ class BleManager:
         connection = self.connections.get(device_id)
         if connection is not None and connection.state == "connected":
             try:
-                await connection.send_command("MODE EDGE_SUMMARY")
+                await connection.send_command("MODE LOW_POWER")
             except (ConnectionError, TimeoutError):
-                self.edge_summary_on_next_wake.add(device_id)
+                self.low_power_on_next_wake.add(device_id)
                 return
-            self.reporting_modes[device_id] = "EDGE_SUMMARY"
+            self.reporting_modes[device_id] = "LOW_POWER"
+            self.low_power_started_at[device_id] = datetime.now(UTC)
             self.live_mode_ends_at.pop(device_id, None)
             return
-        self.edge_summary_on_next_wake.add(device_id)
+        self.low_power_on_next_wake.add(device_id)
 
-    async def _apply_edge_summary_on_next_wake(self, device_id: str) -> None:
-        if device_id not in self.edge_summary_on_next_wake:
+    async def _apply_low_power_on_next_wake(self, device_id: str) -> None:
+        if device_id not in self.low_power_on_next_wake:
             return
         connection = self.connections.get(device_id)
         if connection is None or connection.state != "connected":
             return
         try:
-            await connection.send_command("MODE EDGE_SUMMARY")
+            await connection.send_command("MODE LOW_POWER")
         except (ConnectionError, TimeoutError):
             return
-        self.reporting_modes[device_id] = "EDGE_SUMMARY"
-        self.edge_summary_on_next_wake.discard(device_id)
+        self.reporting_modes[device_id] = "LOW_POWER"
+        self.low_power_started_at[device_id] = datetime.now(UTC)
+        self.low_power_on_next_wake.discard(device_id)
         self._cancel_live_mode_timeout(device_id)
 
     async def identify(self, device_id: str) -> None:
@@ -224,7 +220,7 @@ class BleManager:
 
     def runtime(self, device_id: str) -> dict:
         connection = self.connections.get(device_id)
-        mode = self.reporting_modes.get(device_id, "EDGE_SUMMARY" if connection else "UNKNOWN")
+        mode = self.reporting_modes.get(device_id, "LOW_POWER" if connection else "UNKNOWN")
         next_wake_at = None
         seconds_to_next_wake = None
         if mode == "LOW_POWER" and device_id in self.low_power_started_at:
@@ -238,7 +234,7 @@ class BleManager:
             "low_power_seconds_to_next_wake": seconds_to_next_wake,
             "live_on_next_wake": device_id in self.live_on_next_wake,
             "live_mode_ends_at": self.live_mode_ends_at.get(device_id),
-            "edge_summary_on_next_wake": device_id in self.edge_summary_on_next_wake,
+            "low_power_on_next_wake": device_id in self.low_power_on_next_wake,
         }
         return (
             {"connection_status": connection.state, "last_error": connection.last_error,

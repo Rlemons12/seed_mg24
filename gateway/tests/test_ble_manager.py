@@ -8,13 +8,13 @@ from gateway.app.ble.manager import BleManager, validate_command
 
 @pytest.mark.parametrize("command", [
     "PING", "LED ON", "LED OFF", "LED 0", "LED 255", "RATE 50", "RATE 5000",
-    "MODE LIVE", "MODE LIVE_NEXT_WAKE", "MODE EDGE_SUMMARY", "MODE LOW_POWER",
+    "MODE LIVE", "MODE LIVE_NEXT_WAKE", "MODE LOW_POWER",
 ])
 def test_command_allowlist(command):
     assert validate_command(command) == command
 
 
-@pytest.mark.parametrize("command", ["BLE START", "LED 256", "RATE 49", "RATE 5001", "MODE", "MODE TURBO", "rm -rf"])
+@pytest.mark.parametrize("command", ["BLE START", "LED 256", "RATE 49", "RATE 5001", "MODE", "MODE EDGE_SUMMARY", "MODE TURBO", "rm -rf"])
 def test_command_rejects_unsupported_input(command):
     with pytest.raises(ValueError):
         validate_command(command)
@@ -52,11 +52,9 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
         return None
 
     connection.send_command = accept
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
     await manager.command("MG24-0001", "MODE LIVE")
     assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
-    await manager.command("MG24-0001", "MODE EDGE_SUMMARY")
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
     await manager.command("MG24-0001", "MODE LOW_POWER")
     assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
     assert 1 <= manager.runtime("MG24-0001")["low_power_seconds_to_next_wake"] <= 300
@@ -64,7 +62,7 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
 
 
 @pytest.mark.asyncio
-async def test_live_mode_automatically_returns_to_edge_summary(settings, monkeypatch):
+async def test_live_mode_automatically_returns_to_low_power(settings, monkeypatch):
     async def callback(*_args):
         pass
 
@@ -83,8 +81,8 @@ async def test_live_mode_automatically_returns_to_edge_summary(settings, monkeyp
     monkeypatch.setattr("gateway.app.ble.manager.asyncio.sleep", no_delay)
     manager.reporting_modes["MG24-0001"] = "LIVE"
     await manager._expire_live_mode("MG24-0001")
-    assert sent == ["MODE EDGE_SUMMARY"]
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "EDGE_SUMMARY"
+    assert sent == ["MODE LOW_POWER"]
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
     assert manager.runtime("MG24-0001")["live_mode_ends_at"] is None
     await manager.shutdown()
 

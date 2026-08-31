@@ -2,6 +2,7 @@
 
 const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, firmwarePackages: [], selectedNode: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, resetTarget: null, resetConfirmation: null, draftId: null, commissioningActive: false };
 const sensorTabState = new Map();
+const pendingBatteryRefreshIds = new Set();
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
@@ -125,7 +126,13 @@ function refreshLive() {
         const container = card.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
         const range = card.querySelector(".vibration-controls select")?.value || "1h";
         if (container) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch(() => {});
+        const batteryPanel = card.querySelector('[data-sensor-panel="battery"]:not([hidden])');
+        const batteryMonitoring = batteryPanel?.querySelector(".battery-monitoring");
+        if (batteryMonitoring && pendingBatteryRefreshIds.has(node.node_id)) {
+          MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api, true).catch(() => {});
+        }
       }
+      pendingBatteryRefreshIds.delete(node.node_id);
     });
     refreshConditionSummaries(nodes)?.catch(() => {});
   })().finally(() => { liveRefreshPromise = null; });
@@ -178,7 +185,7 @@ function appendVibrationPanel(details, node, expanded, viewMode) {
   const controls = el("div", undefined, "vibration-controls");
   const rangeLabel = el("label", "Time range");
   const range = el("select"); range.setAttribute("aria-label", "Vibration chart time range");
-  [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"]]
+  [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"]]
     .forEach(([value, label]) => { const option = el("option", label); option.value = value; if(value === "1h") option.selected = true; range.append(option); });
   const refreshButton = el("button", "Refresh"); refreshButton.type = "button";
   rangeLabel.append(range); controls.append(rangeLabel, refreshButton); header.append(title, controls);
@@ -279,17 +286,14 @@ function renderNodes() {
     const batteryModeActions = el("div", undefined, "actions");
     const liveMode = el("button", "Go Live");
     liveMode.type = "button";
-    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE (temporary)"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is sending live telemetry temporarily and will return to Edge Summary automatically.`); } catch(error) { notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
+    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE (temporary)"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is sending live telemetry temporarily and will return to Low Power automatically.`); } catch(error) { notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
     const liveNextWake = el("button", "Go Live on Next Wake");
     liveNextWake.type = "button";
     liveNextWake.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE_NEXT_WAKE"})}); node.live_on_next_wake = true; batteryWakeStatus.dataset.pending = "true"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will switch to live telemetry when its next wake is observed.`); } catch(error) { notice(error.message); } });
-    const edgeMode = el("button", "Use Edge Summary");
-    edgeMode.type = "button";
-    edgeMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE EDGE_SUMMARY"})}); node.reporting_mode = "EDGE_SUMMARY"; batteryModeStatus.textContent = "Telemetry mode: EDGE SUMMARY"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(""); } catch(error) { notice(error.message); } });
     const lowPowerMode = el("button", "Use Low Power");
     lowPowerMode.type = "button";
     lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; node.low_power_next_wake_at = new Date(Date.now() + 300000).toISOString(); batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; batteryWakeStatus.dataset.lowPower = "true"; batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
-    batteryModeActions.append(liveMode, liveNextWake, edgeMode, lowPowerMode); battery.append(batteryModeActions);
+    batteryModeActions.append(liveMode, liveNextWake, lowPowerMode); battery.append(batteryModeActions);
     battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
     if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 
@@ -525,7 +529,16 @@ document.querySelector('[data-action="retry-installation"]').addEventListener("c
 document.querySelector('[data-action="disable-installation"]').addEventListener("click",async()=>{try{await api(`/api/sensor-installations/${encodeURIComponent(state.selectedInstallation)}/disable`,{method:"POST"});await refresh();await openDetail(state.selectedInstallation);}catch(error){notice(error.message);}});
 
 let refreshTimer=null;
-function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refreshLive().catch(()=>{});},1000); }
+function scheduleRefresh(event) {
+  try {
+    const message = JSON.parse(event.data);
+    if (message.event === "telemetry" && message.device_id && message.data?.channels?.battery_voltage) {
+      pendingBatteryRefreshIds.add(message.device_id);
+    }
+  } catch (_) { /* A malformed event must not stop the normal live refresh. */ }
+  if(refreshTimer)return;
+  refreshTimer=setTimeout(()=>{refreshTimer=null;refreshLive().catch(()=>{});},1000);
+}
 $("node-list").addEventListener("mg24:sensor-disclosure", (event) => {
   if (!event.detail?.expanded || !event.detail.nodeId) return;
   const card = event.target.closest("[data-node-id]");

@@ -218,16 +218,19 @@ class BleManager:
             return
         await connection.send_persistence_ack(boot_id, sequence)
 
-    def runtime(self, device_id: str) -> dict:
+    def runtime(self, device_id: str, last_telemetry_at: datetime | None = None) -> dict:
         connection = self.connections.get(device_id)
         mode = self.reporting_modes.get(device_id, "LOW_POWER" if connection else "UNKNOWN")
         next_wake_at = None
         seconds_to_next_wake = None
-        if mode == "LOW_POWER" and device_id in self.low_power_started_at:
+        if mode == "LOW_POWER":
             now = datetime.now(UTC)
-            elapsed = max(0.0, (now - self.low_power_started_at[device_id]).total_seconds())
-            seconds_to_next_wake = max(1, math.ceil(LOW_POWER_WAKE_INTERVAL_SECONDS - (elapsed % LOW_POWER_WAKE_INTERVAL_SECONDS)))
-            next_wake_at = now + timedelta(seconds=seconds_to_next_wake)
+            anchors = [self.low_power_started_at.get(device_id), last_telemetry_at]
+            anchors = [item.replace(tzinfo=UTC) if item and item.tzinfo is None else item for item in anchors if item]
+            if anchors:
+                anchor = max(anchors)
+                next_wake_at = anchor + timedelta(seconds=LOW_POWER_WAKE_INTERVAL_SECONDS)
+                seconds_to_next_wake = max(0, math.ceil((next_wake_at - now).total_seconds()))
         low_power = {
             "low_power_wake_interval_seconds": LOW_POWER_WAKE_INTERVAL_SECONDS,
             "low_power_next_wake_at": next_wake_at,

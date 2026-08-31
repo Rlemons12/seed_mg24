@@ -32,7 +32,7 @@ def list_nodes(request: Request, session: Session = Depends(get_session)) -> lis
             "protocol_version": node.protocol_version,
             "compatibility_status": node.compatibility_status,
             "compatibility_message": node.compatibility_message,
-            **request.app.state.ble_manager.runtime(node.device_id),
+            **request.app.state.ble_manager.runtime(node.device_id, node.last_seen_at),
         }
         for node in repository.list()
     ]

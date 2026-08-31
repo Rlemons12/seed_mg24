@@ -13,6 +13,7 @@ function updateBatteryWakeCountdowns() {
     const wakeAt = Date.parse(item.dataset.nextWakeAt || "");
     if (!Number.isFinite(wakeAt)) { item.textContent = item.dataset.lowPower === "true" ? "Next wake time is being established." : ""; return; }
     const remaining = Math.max(0, Math.ceil((wakeAt - Date.now()) / 1000));
+    if (remaining === 0) { item.textContent = "Low-power wake is overdue; waiting for telemetry."; return; }
     const minutes = Math.floor(remaining / 60); const seconds = remaining % 60;
     item.textContent = `Next low-power wake in ${minutes}:${String(seconds).padStart(2, "0")}.`;
   });
@@ -116,6 +117,12 @@ function refreshLive() {
       if (runtime) { runtime.textContent = node.connection_status; runtime.className = `state node-runtime-state ${node.connection_status}`; }
       const battery = card.querySelector(".sensor-summary__battery");
       if (battery) battery.textContent = batterySummary(node.node_id);
+      const wakeStatus = card.querySelector(".battery-wake-status");
+      if (wakeStatus) {
+        wakeStatus.dataset.lowPower = String(node.reporting_mode === "LOW_POWER");
+        wakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at || "";
+        wakeStatus.dataset.pending = String(Boolean(node.live_on_next_wake));
+      }
       card.querySelectorAll(".live-input-grid").forEach((inputGrid) => {
         const rows = inputGrid.classList.contains("live-input-grid--compact")
           ? (state.readings[node.node_id] || []).filter((row) => ["acceleration_x", "acceleration_y", "acceleration_z", "angular_velocity_x", "angular_velocity_y", "angular_velocity_z"].includes(row.channel))

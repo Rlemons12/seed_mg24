@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,6 +23,22 @@ def test_command_rejects_unsupported_input(command):
 
 def test_reconnect_backoff_is_exponential_and_bounded():
     assert [reconnect_delay(1, 5, attempt) for attempt in range(5)] == [1, 2, 4, 5, 5]
+
+
+@pytest.mark.asyncio
+async def test_low_power_countdown_uses_last_telemetry_and_stays_overdue(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    manager.schedule("MG24-0001", "AA")
+    recent = datetime.now(UTC) - timedelta(seconds=60)
+    runtime = manager.runtime("MG24-0001", recent)
+    assert 238 <= runtime["low_power_seconds_to_next_wake"] <= 240
+    assert runtime["low_power_next_wake_at"] == recent + timedelta(seconds=300)
+    overdue = manager.runtime("MG24-0001", datetime.now(UTC) - timedelta(seconds=600))
+    assert overdue["low_power_seconds_to_next_wake"] == 0
+    await manager.shutdown()
 
 
 @pytest.mark.asyncio

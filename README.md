@@ -8,6 +8,8 @@ Identity and operational configuration use separate redundant NVM3 records. Ordi
 
 Gateway removal, explicit restoration, and physical factory reset are distinct workflows. Removal preserves telemetry and device firmware/configuration; factory reset is USB-only and preserves telemetry, firmware, hardware identity, and platform storage. See [`docs/sensor-lifecycle.md`](docs/sensor-lifecycle.md).
 
+Durable telemetry identity, persistence acknowledgements, replay buffering, and independent sampling/reporting semantics are documented in [`docs/data-management-protocol.md`](docs/data-management-protocol.md).
+
 > This is a monitoring system. It is not an independently engineered or certified equipment-protection or safety control. Authentication and TLS must be added before exposing the dashboard outside a trusted LAN.
 
 ## Architecture
@@ -128,7 +130,6 @@ Use `POST /api/sensor-profiles/validate` before import. Invalid profile files ar
 sensor_package/         MG24 firmware, profiles, build/flash/release tools and tests (0.1.0)
 gateway/                Raspberry Pi BLE/API/SQLite/dashboard product and tests (0.1.0)
 shared_protocol/        authoritative versioned BLE schemas and compatibility matrix (1.0.0)
-legacy/desktop_dashboard/ preserved Tkinter/serial desktop tool
 docs/                   repository architecture, compatibility, and development workflow
 ```
 
@@ -360,23 +361,13 @@ Calibration: Not configured
 Engineering value: Unavailable
 ```
 
-## Legacy desktop dashboard
-
-`main.py` remains the existing Tkinter serial/BLE tool and retains its prior arguments:
-
-```powershell
-.\.venv\Scripts\python.exe main.py --port COM3 --baud 115200
-```
-
-It remains useful for USB diagnostics and does not participate in the Raspberry Pi service. USB serial output remains backward compatible.
-
 ## Testing
 
 ```bash
 python -m pip install -r gateway/requirements-dev.txt
 python -m pytest -q
-ruff check gateway tests
-python -m compileall -q gateway main.py
+ruff check gateway sensor_package
+python -m compileall -q gateway sensor_package
 ```
 
 BLE tests use fakes and never require a physical adapter. `sensor_package/tests/native/test_firmware_processing.py` builds and runs the Arduino-independent modules with `g++` or `clang++` when one is installed. Arduino CLI compilation still requires the Silicon Labs board package and the hardware libraries.

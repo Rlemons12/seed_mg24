@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,17 @@ def _finite_number(value: Any, field: str, minimum: float | None = None, maximum
 
 def _uint32(value: Any, field: str) -> int:
     return int(_finite_number(value, field, 0, 0xFFFFFFFF))
+
+
+def _boot_id(payload: dict[str, Any], schema: int) -> str | None:
+    value = payload.get("bid")
+    if schema < 2:
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{16}", value) is None:
+        raise TelemetryParseError("bid must be a 16-character lowercase hexadecimal boot identifier")
+    if "s" not in payload:
+        raise TelemetryParseError("schema version 2 requires a sequence number")
+    return value
 
 
 def _array(value: Any, field: str, exact: int | None = None, maximum: int = 16) -> list[float | int]:
@@ -115,18 +127,26 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
                 quality=quality,
                 value_kind=value_kind,
             )
+    imu_indicator = work.get("io", work.get("imu", 1))
+    if imu_indicator not in {0, 1} or isinstance(imu_indicator, bool):
+        raise TelemetryParseError("io must be 0 or 1")
+    imu_quality = "good" if imu_indicator == 1 else "sensor_fault"
     acceleration = work.get("a")
     if acceleration is None and isinstance(work.get("accel"), dict):
         acceleration = [work["accel"].get(axis) for axis in ("x", "y", "z")]
     if acceleration is not None:
         for axis, value in zip("xyz", _array(acceleration, "a", exact=3), strict=True):
-            channels[f"acceleration_{axis}"] = ChannelValue(value=value, unit="g", value_kind="calibrated")
+            channels[f"acceleration_{axis}"] = ChannelValue(
+                value=value, unit="g", quality=imu_quality, value_kind="calibrated"
+            )
     gyro = work.get("g")
     if gyro is None and isinstance(work.get("gyro"), dict):
         gyro = [work["gyro"].get(axis) for axis in ("x", "y", "z")]
     if gyro is not None:
         for axis, value in zip("xyz", _array(gyro, "g", exact=3), strict=True):
-            channels[f"angular_velocity_{axis}"] = ChannelValue(value=value, unit="dps", value_kind="calibrated")
+            channels[f"angular_velocity_{axis}"] = ChannelValue(
+                value=value, unit="dps", quality=imu_quality, value_kind="calibrated"
+            )
     analog = work.get("n", work.get("analog"))
     if analog is not None:
         for index, value in enumerate(_array(analog, "n", maximum=16)):
@@ -139,13 +159,23 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
     device_id = work.get("id")
     if device_id is not None and (not isinstance(device_id, str) or len(device_id) > 96):
         raise TelemetryParseError("id is invalid")
+    sample_count = _uint32(work["sc"], "sc") if "sc" in work else None
+    if sample_count == 0:
+        raise TelemetryParseError("sample count must be positive")
     return NormalizedTelemetry(
         schema_version=schema,
         device_id=device_id,
         record_type="measurement",
         device_uptime_ms=uptime,
         sequence_number=sequence,
+        sensor_boot_id=_boot_id(work, schema),
+        sample_count=sample_count,
         received_at=received_at,
+        delayed=bool(work.get("d", False)),
+        metadata={
+            "persistent_journal": True,
+            **({"journal_age_ms": _uint32(work["jm"], "jm")} if "jm" in work else {}),
+        } if work.get("pj") == 1 else {},
         channels=channels,
         original_payload=payload,
     )
@@ -164,7 +194,7 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
     if kind not in record_types:
         raise TelemetryParseError("unsupported message type")
     version = int(_finite_number(payload.get("v"), "v", 1, 255))
-    if version != 1:
+    if version not in {1, 2}:
         raise TelemetryParseError("unsupported schema version")
     device_id = payload.get("id")
     if device_id is not None and (not isinstance(device_id, str) or not device_id or len(device_id) > 96):
@@ -210,6 +240,7 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
         record_type=record_types[kind],
         device_uptime_ms=uptime,
         sequence_number=sequence,
+        sensor_boot_id=_boot_id(payload, version),
         received_at=received_at,
         delayed=bool(payload.get("d", False)),
         event=event,

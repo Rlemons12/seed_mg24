@@ -7,6 +7,8 @@ adding a new page or navigation item.
 
 This component owns BLE discovery and connections, the node and attached-sensor registry, declarative profile import, provisioning, SQLite history, FastAPI, WebSockets, and the browser dashboard. It contains no Arduino source or firmware build logic.
 
+Battery charge-cycle runtime, degradation, recharge-window, and replacement planning are documented in [`../docs/battery-runtime-monitoring.md`](../docs/battery-runtime-monitoring.md). Battery percentage remains unavailable until a physical chemistry/discharge model is validated.
+
 ## Sensor Data Storage
 
 SQLite is the authoritative local/edge database on the Raspberry Pi. PostgreSQL is not required on the Raspberry Pi. By default the gateway opens `sqlite:///./data/seed_mg24.db`; set `SEED_MG24_DATABASE_URL` to another durable local SQLite path when required. The path is relative to the gateway process working directory. Stop the gateway before copying the database for an offline backup, and copy the database together with its `-wal` and `-shm` files if it cannot be cleanly stopped. A gateway intended for sustained high-rate history should use storage designed for its write volume and endurance rather than relying indefinitely on a low-quality SD card.
@@ -21,7 +23,25 @@ One BLE packet is normalized and persisted in one SQLAlchemy transaction, includ
 
 History is available from `GET /api/devices/{node_id}/readings`. The existing `offset`, `limit`, `start`, `end`, and `channel` parameters remain supported. Additive `installation_id`, `interface_id`, opaque `cursor`, and `include_total` parameters support more focused/keyset queries. `SEED_MG24_HISTORY_PAGE_SIZE_MAX` defaults to 500 rows and `SEED_MG24_HISTORY_MAX_DAYS` defaults to 31 days per request. Set `include_total=false` for large histories to avoid an exact `COUNT(*)`; follow `next_cursor` for the next page.
 
-Local retention is unlimited by default. `SEED_MG24_HISTORY_RETENTION_DAYS` is blank/disabled unless explicitly configured. When enabled, a background task deletes only readings strictly older than the cutoff, in batches controlled by `SEED_MG24_HISTORY_RETENTION_BATCH_SIZE` (default 1,000). It does not delete node, installation, profile, audit, provisioning, configuration, or lifecycle records and does not automatically run `VACUUM`.
+Local retention is unlimited by default. `SEED_MG24_HISTORY_RETENTION_DAYS` is blank/disabled unless explicitly configured. When enabled, a background task deletes vibration windows and readings strictly older than the cutoff in independent batches controlled by `SEED_MG24_HISTORY_RETENTION_BATCH_SIZE` (default 1,000). Cleanup continues every five seconds while either table has eligible rows, then returns to the six-hour idle cadence. It does not delete node, installation, profile, audit, provisioning, configuration, lifecycle, battery-cycle, or battery-generation records.
+
+The gateway runs a non-blocking SQLite `PASSIVE` WAL checkpoint every `SEED_MG24_SQLITE_WAL_CHECKPOINT_INTERVAL_SECONDS` (default 300 seconds). Checkpointing bounds the separate WAL file but does not shrink free pages in the main database. SQLite reuses those pages for later writes.
+
+Live mode is intended only for bounded diagnostics. `SEED_MG24_LIVE_MODE_MAX_SECONDS` defaults to 600 seconds; after that interval the gateway commands the sensor back to Edge Summary. If it is disconnected at expiry, the fallback remains queued and is applied on the next observed telemetry wake. Edge Summary or Low Power should be the normal operating mode.
+
+### Controlled SQLite compaction
+
+Retention deletion does not reduce the database file size. Compact only during a planned outage with enough temporary free disk space for the live content of a second database:
+
+1. Stop the gateway and verify that no gateway Python process remains.
+2. Run `PRAGMA wal_checkpoint(TRUNCATE)` against the configured database.
+3. Record application-table counts and run `PRAGMA integrity_check`.
+4. Create a new file with `VACUUM INTO 'seed_mg24.compact.db'`; never overwrite the source directly.
+5. Run `PRAGMA integrity_check` and `PRAGMA foreign_key_check` on the copy, and compare every application-table count.
+6. Rename the original to a temporary pre-compaction name, move the validated copy into the configured path, and start the gateway.
+7. Confirm `/api/health`, `/api/nodes`, fresh telemetry writes, and `PRAGMA quick_check` before removing the temporary original.
+
+Do not run compaction while the gateway is active, do not copy only the main file while a WAL exists, and do not delete the original before validating the replacement.
 
 ### Storage growth
 
@@ -36,6 +56,10 @@ Current firmware defaults to a 100 ms report interval (10 packets/second). With 
 | 100 | 16 each | 1,000 total | 960,000 | 57,600,000 | 1,382,400,000 | 41,472,000,000 | 504,576,000,000 |
 
 Actual delivery can be lower because of BLE connection/throughput limits, disconnects, disabled channels, configuration changes, or dropped packets. Disk usage must be measured on representative hardware: SQLite record/page overhead, text lengths, indexes, payload size, WAL checkpoint state, and page utilization all materially affect bytes per row. At the default rate, deliberate reporting intervals and a site-specific retention setting are essential before a large deployment; no deletion default is inferred from this estimate.
+
+### Compact telemetry storage assessment
+
+The normalized reading schema deliberately provides channel-level history, quality, units, installation/interface attribution, retention, and indexed queries. A compact packet table would reduce repeated packet metadata, but adding it alongside `readings` would increase storage rather than reduce it. Replacing normalized rows would require rewriting history APIs, battery queries, installation attribution, synchronization identity, retention, and dashboard consumers. Therefore this change does not duplicate packets into a second table. The safe near-term controls are Edge Summary/Low Power operation, bounded Live mode, one-day site retention, and compaction. A future schema migration should benchmark a packet-plus-columnar-summary design against those query requirements before replacing normalized rows.
 
 The intended future topology is **SQLite at the edge + PostgreSQL centrally**. A future `TelemetrySyncService` can page unsynchronized local rows, send `gateway_id` plus `reading_uuid`, and let a central PostgreSQL service use idempotent conflict handling. Central credentials and PostgreSQL drivers are intentionally absent. Loss of LAN, Wi-Fi/WAP, or the future central server must never stop BLE acquisition or local SQLite collection.
 

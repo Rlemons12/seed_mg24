@@ -18,6 +18,7 @@ class SensorChannel {
   void mark_reported(uint32_t now);
   void mark_heartbeat(uint32_t now);
   const ProcessedValue& value() const { return value_; }
+  uint32_t samples_since_report() const { return samples_since_report_; }
 
  private:
   const ChannelConfig* config_;
@@ -30,4 +31,5 @@ class SensorChannel {
   bool has_reported_;
   float last_reported_;
   uint32_t last_sample_, last_processing_, last_report_, last_heartbeat_, last_value_time_;
+  uint32_t samples_since_report_;
 };

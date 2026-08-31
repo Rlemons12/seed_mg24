@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from gateway.app.config import Settings
-from gateway.app.database import create_database_engine, create_session_factory, initialize_database
-from gateway.app.models import Reading, RegisteredDevice, SensorInstallation
+from gateway.app.database import checkpoint_sqlite, create_database_engine, create_session_factory, initialize_database
+from gateway.app.models import Reading, RegisteredDevice, SensorInstallation, VibrationWindow
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.services.telemetry_persistence import TelemetryPersistenceError
 from gateway.app.services.telemetry_retention import TelemetryRetentionService
@@ -231,6 +231,45 @@ def test_retention_disabled_enabled_boundary_and_batching(settings):
     assert TelemetryRetentionService(factory, 30, 100).cleanup_batch(now) == 1
     with factory() as session:
         assert {item.channel for item in session.scalars(select(Reading))} == {"boundary", "new"}
+
+
+def test_retention_deletes_vibration_and_reading_batches_together(settings):
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    factory = create_session_factory(engine)
+    node = add_node(factory)
+    now = datetime(2026, 8, 10, tzinfo=UTC)
+    metrics = {
+        "effective_sample_rate_hz": 416.0, "validity": "valid",
+        **{name: 0.0 for name in (
+            "accel_rms_x_g", "accel_rms_y_g", "accel_rms_z_g", "accel_peak_x_g", "accel_peak_y_g",
+            "accel_peak_z_g", "crest_x", "crest_y", "crest_z", "kurtosis_x", "kurtosis_y", "kurtosis_z",
+            "dominant_frequency_x_hz", "dominant_frequency_y_hz", "dominant_frequency_z_hz",
+            "dominant_amplitude_x_g", "dominant_amplitude_y_g", "dominant_amplitude_z_g",
+            "gyro_rms_x_dps", "gyro_rms_y_dps", "gyro_rms_z_dps",
+        )},
+    }
+    with factory() as session:
+        session.add(reading(node.id, now - timedelta(days=2), channel="old"))
+        session.add(VibrationWindow(
+            gateway_id="00000000-0000-0000-0000-000000000000", registered_device_id=node.id,
+            session_id="old", window_sequence=1, observed_at=now - timedelta(days=2),
+            device_uptime_ms=1, schema_version=1, algorithm_version=1, **metrics,
+        ))
+        session.commit()
+    assert TelemetryRetentionService(factory, 1, 100).cleanup_batch(now) == 2
+    with factory() as session:
+        assert session.scalar(select(Reading.id)) is None
+        assert session.scalar(select(VibrationWindow.id)) is None
+
+
+def test_passive_sqlite_checkpoint_is_bounded_and_validated(settings):
+    engine = create_database_engine(settings)
+    initialize_database(engine)
+    result = checkpoint_sqlite(engine)
+    assert result is not None and len(result) == 3 and all(item >= 0 for item in result)
+    with pytest.raises(ValueError, match="unsupported SQLite checkpoint mode"):
+        checkpoint_sqlite(engine, "DELETE EVERYTHING")
 
 
 def test_database_reopen_preserves_gateway_identity_and_readings(tmp_path):

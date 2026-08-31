@@ -46,7 +46,7 @@ def test_persistence_modules(tmp_path):
     command = [compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror", f"-I{firmware}", str(package / "tests/native/persistence_tests.cpp")]
     command.extend(
         str(firmware / source)
-        for source in ["persistent_record.cpp", "node_identity_store.cpp", "configuration_store.cpp", "factory_reset.cpp"]
+        for source in ["persistent_record.cpp", "persistent_telemetry_journal.cpp", "node_identity_store.cpp", "configuration_store.cpp", "factory_reset.cpp"]
     )
     command.extend(["-o", str(executable)])
     subprocess.run(command, check=True, capture_output=True, text=True)

@@ -2,10 +2,22 @@
 
 const state = { nodes: [], removedNodes: [], installations: [], profiles: [], interfaces: [], readings: {}, selectedDiscovery: null, selectedUsbBoard: null, firmwarePackages: [], selectedNode: null, selectedInstallation: null, selectedConfigNode: null, lifecycle: null, resetTarget: null, resetConfirmation: null, draftId: null, commissioningActive: false };
 const sensorTabState = new Map();
+const pendingBatteryRefreshIds = new Set();
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
 function time(value) { return value ? new Date(value).toLocaleString() : "Never"; }
+function updateBatteryWakeCountdowns() {
+  document.querySelectorAll(".battery-wake-status").forEach((item) => {
+    if (item.dataset.pending === "true") { item.textContent = "Go Live is queued for the next sensor wake."; return; }
+    const wakeAt = Date.parse(item.dataset.nextWakeAt || "");
+    if (!Number.isFinite(wakeAt)) { item.textContent = item.dataset.lowPower === "true" ? "Next wake time is being established." : ""; return; }
+    const remaining = Math.max(0, Math.ceil((wakeAt - Date.now()) / 1000));
+    const minutes = Math.floor(remaining / 60); const seconds = remaining % 60;
+    item.textContent = `Next low-power wake in ${minutes}:${String(seconds).padStart(2, "0")}.`;
+  });
+}
+setInterval(updateBatteryWakeCountdowns, 1000);
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options });
@@ -114,7 +126,13 @@ function refreshLive() {
         const container = card.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
         const range = card.querySelector(".vibration-controls select")?.value || "1h";
         if (container) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch(() => {});
+        const batteryPanel = card.querySelector('[data-sensor-panel="battery"]:not([hidden])');
+        const batteryMonitoring = batteryPanel?.querySelector(".battery-monitoring");
+        if (batteryMonitoring && pendingBatteryRefreshIds.has(node.node_id)) {
+          MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api, true).catch(() => {});
+        }
       }
+      pendingBatteryRefreshIds.delete(node.node_id);
     });
     refreshConditionSummaries(nodes)?.catch(() => {});
   })().finally(() => { liveRefreshPromise = null; });
@@ -167,7 +185,7 @@ function appendVibrationPanel(details, node, expanded, viewMode) {
   const controls = el("div", undefined, "vibration-controls");
   const rangeLabel = el("label", "Time range");
   const range = el("select"); range.setAttribute("aria-label", "Vibration chart time range");
-  [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"]]
+  [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"]]
     .forEach(([value, label]) => { const option = el("option", label); option.value = value; if(value === "1h") option.selected = true; range.append(option); });
   const refreshButton = el("button", "Refresh"); refreshButton.type = "button";
   rangeLabel.append(range); controls.append(rangeLabel, refreshButton); header.append(title, controls);
@@ -204,7 +222,7 @@ function activateSensorTab(card, name, focus = false) {
   });
   card.querySelectorAll("[data-sensor-panel]").forEach((panel) => { panel.hidden = panel.dataset.sensorPanel !== name; });
   const panel = card.querySelector(`[data-sensor-panel="${name}"]`);
-  const loader = panel?._vibrationLoad; if (loader) loader().catch(() => {});
+  const loader = panel?._panelLoad || panel?._vibrationLoad; if (loader) loader().catch(() => {});
 }
 
 function renderNodes() {
@@ -238,7 +256,7 @@ function renderNodes() {
     details.hidden = !expanded;
     const activeTab = sensorTabState.get(node.node_id) || "overview";
     const tabs = el("div", undefined, "sensor-tabs"); tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", `${node.display_name} details`);
-    [["overview", "Overview"], ["inputs", "Live Inputs"], ["vibration", "Vibration"], ["baseline", "Baseline"], ["device", "Device Info"]]
+    [["overview", "Overview"], ["inputs", "Live Inputs"], ["battery", "Battery"], ["vibration", "Vibration"], ["baseline", "Baseline"], ["device", "Device Info"]]
       .forEach(([name, label]) => tabs.append(sensorTab(node.node_id, name, label, activeTab === name)));
     details.append(tabs);
 
@@ -254,6 +272,30 @@ function renderNodes() {
     const inputs = sensorPanel(node.node_id, "inputs", activeTab === "inputs"); inputs.append(el("h4", "Live sensor inputs"));
     const inputGrid = el("div", undefined, "channel-grid live-input-grid");
     renderLiveInputs(inputGrid, node, state.readings[node.node_id] || []); inputs.append(inputGrid);
+
+    const battery = sensorPanel(node.node_id, "battery", activeTab === "battery");
+    const batteryMonitoring = el("div", undefined, "battery-monitoring");
+    batteryMonitoring.append(el("p", "Open this tab to load battery runtime history.", "muted")); battery.append(batteryMonitoring);
+    const batteryModeStatus = el("p", `Telemetry mode: ${(node.reporting_mode || "UNKNOWN").replaceAll("_", " ")}`, "state battery-mode-status");
+    battery.append(batteryModeStatus);
+    const batteryWakeStatus = el("p", "", "muted battery-wake-status");
+    batteryWakeStatus.dataset.lowPower = String(node.reporting_mode === "LOW_POWER");
+    batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at || "";
+    batteryWakeStatus.dataset.pending = String(Boolean(node.live_on_next_wake));
+    battery.append(batteryWakeStatus); updateBatteryWakeCountdowns();
+    const batteryModeActions = el("div", undefined, "actions");
+    const liveMode = el("button", "Go Live");
+    liveMode.type = "button";
+    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE (temporary)"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is sending live telemetry temporarily and will return to Low Power automatically.`); } catch(error) { notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
+    const liveNextWake = el("button", "Go Live on Next Wake");
+    liveNextWake.type = "button";
+    liveNextWake.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE_NEXT_WAKE"})}); node.live_on_next_wake = true; batteryWakeStatus.dataset.pending = "true"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will switch to live telemetry when its next wake is observed.`); } catch(error) { notice(error.message); } });
+    const lowPowerMode = el("button", "Use Low Power");
+    lowPowerMode.type = "button";
+    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; node.low_power_next_wake_at = new Date(Date.now() + 300000).toISOString(); batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; batteryWakeStatus.dataset.lowPower = "true"; batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
+    batteryModeActions.append(liveMode, liveNextWake, lowPowerMode); battery.append(batteryModeActions);
+    battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
+    if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));
 
     const vibration = sensorPanel(node.node_id, "vibration", activeTab === "vibration");
     const vibrationView = appendVibrationPanel(vibration, node, expanded && activeTab === "vibration", "vibration"); vibration._vibrationLoad = vibrationView.load;
@@ -276,6 +318,17 @@ function renderNodes() {
     const configure = el("button", "Configure");
     configure.type = "button";
     configure.addEventListener("click", () => openDeviceConfiguration(node).catch((error) => notice(error.message)));
+    const identify = el("button", "Identify Sensor");
+    identify.type = "button";
+    identify.addEventListener("click", async () => {
+      identify.disabled = true;
+      identify.textContent = "Identifyingâ€¦";
+      try {
+        await api(`/api/devices/${encodeURIComponent(node.node_id)}/identify`, {method:"POST", body:JSON.stringify({})});
+        notice(`${node.display_name} blinked three times quickly and once slowly.`);
+      } catch (error) { notice(error.message); }
+      finally { identify.disabled = false; identify.textContent = "Identify Sensor"; }
+    });
     const remove = el("button", "Remove from network", "danger");
     remove.type = "button";
     remove.addEventListener("click", () => openLifecycle("remove", node));
@@ -285,9 +338,9 @@ function renderNodes() {
     const resetReregister = el("button", "Reset and Re-register", "danger");
     resetReregister.type = "button";
     resetReregister.addEventListener("click", () => window.MG24ResetReregister.open(node));
-    actions.append(reconnect, configure, remove, factoryReset, resetReregister);
+    actions.append(identify, reconnect, configure, remove, factoryReset, resetReregister);
     device.append(actions);
-    details.append(overview, inputs, vibration, baseline, device);
+    details.append(overview, inputs, battery, vibration, baseline, device);
     card.append(heading, details);
     list.append(card);
   });
@@ -303,7 +356,7 @@ function renderRemovedNodes() {
       el("p", `Removed ${time(node.removed_at)}. Historical telemetry is retained.`, "muted"));
     const restore = el("button", "Restore/Reapprove");
     restore.type = "button";
-    restore.addEventListener("click", () => openLifecycle("restore", node));
+    restore.addEventListener("click", () => openLifecycle("restore", node).catch((error) => notice(error.message)));
     card.append(restore); list.append(card);
   });
   if (!state.removedNodes.length) list.append(el("p", "No removed sensor registrations.", "muted"));
@@ -312,6 +365,7 @@ function renderRemovedNodes() {
 async function openLifecycle(operation, node) {
   const prepared = await api("/api/device-lifecycle/confirm", {method:"POST", body:JSON.stringify({
     operation, device_id:node.node_id || node.device_id, expected_hardware_id:node.hardware_id || null,
+    expected_ble_address:node.ble_address || null,
   })});
   state.lifecycle = prepared;
   $("lifecycle-title").textContent = operation === "remove" ? "Remove from network" : "Restore/Reapprove sensor";
@@ -475,7 +529,16 @@ document.querySelector('[data-action="retry-installation"]').addEventListener("c
 document.querySelector('[data-action="disable-installation"]').addEventListener("click",async()=>{try{await api(`/api/sensor-installations/${encodeURIComponent(state.selectedInstallation)}/disable`,{method:"POST"});await refresh();await openDetail(state.selectedInstallation);}catch(error){notice(error.message);}});
 
 let refreshTimer=null;
-function scheduleRefresh() { if(refreshTimer)return; refreshTimer=setTimeout(()=>{refreshTimer=null;refreshLive().catch(()=>{});},1000); }
+function scheduleRefresh(event) {
+  try {
+    const message = JSON.parse(event.data);
+    if (message.event === "telemetry" && message.device_id && message.data?.channels?.battery_voltage) {
+      pendingBatteryRefreshIds.add(message.device_id);
+    }
+  } catch (_) { /* A malformed event must not stop the normal live refresh. */ }
+  if(refreshTimer)return;
+  refreshTimer=setTimeout(()=>{refreshTimer=null;refreshLive().catch(()=>{});},1000);
+}
 $("node-list").addEventListener("mg24:sensor-disclosure", (event) => {
   if (!event.detail?.expanded || !event.detail.nodeId) return;
   const card = event.target.closest("[data-node-id]");

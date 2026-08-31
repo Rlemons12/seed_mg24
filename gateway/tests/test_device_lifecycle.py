@@ -151,6 +151,10 @@ def test_restore_requires_explicit_confirmed_operation_and_reuses_record(client,
     with app.state.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Reading)) == 1
         assert session.scalar(select(func.count()).select_from(DeviceLifecycleEvent)) == 2
+        installation = session.scalar(select(SensorInstallation).where(SensorInstallation.node_id == "MG24-0001"))
+        assert installation.archived is False
+        assert installation.enabled is True
+        assert installation.provisioning_state == "active"
 
 
 @pytest.mark.asyncio
@@ -212,6 +216,7 @@ def test_dashboard_separates_remove_restore_and_factory_reset_workflows():
     assert "Historical telemetry" in script
     assert 'id="lifecycle-confirm-id"' in template
     assert "/api/device-lifecycle/confirm" in script and "/api/device-lifecycle/execute" in script
+    assert "expected_ble_address:node.ble_address || null" in script
     assert 'id="factory-reset-dialog"' in template
     assert "/api/factory-reset/" in script and "USB is required" in template
     assert "Remove from network" in script and "Factory Reset Sensor" in script

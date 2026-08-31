@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from gateway import __version__
 from gateway.app.api import (
+    battery,
     commands,
     commissioning,
     device_lifecycle,
@@ -30,6 +31,7 @@ from gateway.app.ble.manager import BleManager
 from gateway.app.ble.scanner import BleScannerService
 from gateway.app.config import Settings, get_settings
 from gateway.app.database import (
+    checkpoint_sqlite,
     create_database_engine,
     create_session_factory,
     get_session,
@@ -43,6 +45,7 @@ from gateway.app.profiles.registry import ProfileRegistry
 from gateway.app.repositories.device_repository import DeviceRepository
 from gateway.app.repositories.firmware_repository import FirmwareHistoryRepository
 from gateway.app.request_security import require_bounded_same_origin_json
+from gateway.app.services.battery_health import BatteryHealthService
 from gateway.app.services.ble_provisioning import BleNodeProvisioner
 from gateway.app.services.compatibility_service import CompatibilityService
 from gateway.app.services.firmware_installation import ApprovedFirmwareCatalog, UsbFirmwareInstaller
@@ -60,6 +63,21 @@ templates = Jinja2Templates(directory=PACKAGE_DIR / "templates")
 logger = logging.getLogger(__name__)
 
 
+def _effective_device_metadata(device, reported: dict | None) -> dict:
+    """Merge a transient BLE read with last verified metadata without erasing it."""
+    metadata = {
+        "sensor_package_version": device.sensor_package_version,
+        "firmware_version": device.firmware_version,
+        "protocol_version": device.protocol_version,
+        "configuration_schema_version": device.configuration_schema_version,
+        "build_identifier": device.build_identifier,
+        "git_commit": device.firmware_git_commit,
+        "v": device.telemetry_schema_version,
+    }
+    metadata.update({key: value for key, value in (reported or {}).items() if value not in (None, "")})
+    return metadata
+
+
 def create_app(settings: Settings | None = None, *, client_factory=None, scanner_factory=None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level)
@@ -72,6 +90,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     profile_registry.reload()
     compatibility = CompatibilityService(REPOSITORY_DIR / "shared_protocol" / "compatibility.json")
     websocket_manager = WebSocketManager()
+    battery_service = BatteryHealthService(session_factory, settings)
     telemetry_service = TelemetryService(
         session_factory, websocket_manager, settings.max_payload_bytes, settings.max_payload_json_bytes, gateway_id,
         vibration_service=VibrationConditionService(
@@ -80,6 +99,8 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             persistence_windows=settings.vibration_condition_persistence_windows,
             persistence_interval_seconds=settings.vibration_persistence_interval_seconds,
         ),
+        battery_service=battery_service,
+        battery_processing_interval_seconds=settings.battery_processing_interval_seconds,
     )
     retention_service = TelemetryRetentionService(session_factory, settings.history_retention_days, settings.history_retention_batch_size)
     catalog_path = settings.firmware_catalog_path
@@ -102,7 +123,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 if device and not device.archived and device.enabled and device.lifecycle_state != "removed":
                     if state == "connected":
                         connection = manager.connections.get(device_id)
-                        metadata = connection.metadata if connection else {}
+                        metadata = _effective_device_metadata(device, connection.metadata if connection else None)
                         result = compatibility.evaluate(metadata)
                         repository.update(
                             device,
@@ -124,6 +145,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             await websocket_manager.broadcast("device_status", device_id, {"connection_status": state, "last_error": error})
 
         manager = BleManager(settings, telemetry_service.ingest, status_callback, client_factory=client_factory)
+        telemetry_service.acknowledgement_sender = manager.persistence_acknowledgement
         app.state.ble_manager = manager
 
         async def retention_loop() -> None:
@@ -133,9 +155,20 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 except Exception:
                     logger.exception("Telemetry retention cleanup failed; local acquisition remains active")
                     deleted = 0
-                await asyncio.sleep(5 if deleted == settings.history_retention_batch_size else 21600)
+                await asyncio.sleep(5 if deleted > 0 else 21600)
+
+        async def checkpoint_loop() -> None:
+            while True:
+                await asyncio.sleep(settings.sqlite_wal_checkpoint_interval_seconds)
+                try:
+                    result = await asyncio.to_thread(checkpoint_sqlite, engine)
+                    if result is not None and result[0]:
+                        logger.warning("SQLite passive checkpoint remained busy: %s", result)
+                except Exception:
+                    logger.exception("SQLite passive checkpoint failed; local acquisition remains active")
 
         retention_task = asyncio.create_task(retention_loop()) if settings.history_retention_days is not None else None
+        checkpoint_task = asyncio.create_task(checkpoint_loop())
         with session_factory() as session:
             for device in DeviceRepository(session).list():
                 if device.enabled and device.ble_address:
@@ -147,6 +180,9 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
                 retention_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await retention_task
+            checkpoint_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await checkpoint_task
             await manager.shutdown()
             engine.dispose()
             if settings.gateway_instance_lock:
@@ -170,6 +206,10 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
             or request.url.path.startswith("/api/reset-reregister/")
             or request.url.path.endswith("/vibration/baseline/reset")
             or request.url.path.endswith("/vibration/baseline/relearn")
+            or request.url.path.endswith("/battery/mark-charged")
+            or request.url.path.endswith("/battery/replace")
+            or request.url.path.endswith("/commands")
+            or request.url.path.endswith("/identify")
         )
         if protected_post:
             try:
@@ -189,6 +229,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.state.settings = settings
     app.state.session_factory = session_factory
     app.state.websocket_manager = websocket_manager
+    app.state.battery_service = battery_service
     app.state.profile_registry = profile_registry
     app.state.compatibility = compatibility
     app.state.node_provisioner = BleNodeProvisioner(client_factory, settings.provisioning_timeout_seconds)
@@ -217,6 +258,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
     app.dependency_overrides[get_session] = session_dependency(session_factory)
     app.include_router(health.router)
     app.include_router(devices.router)
+    app.include_router(battery.router)
     app.include_router(device_lifecycle.router)
     app.include_router(factory_reset.router)
     app.include_router(reset_reregister.router)

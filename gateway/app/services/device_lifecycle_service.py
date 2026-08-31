@@ -94,6 +94,7 @@ class DeviceLifecycleService:
                     "hardware_identity_conflict", "Hardware identity is associated with another sensor record; resolve it first."
                 )
         operation_id = uuid4().hex
+        now = utc_now()
         try:
             device.archived = False
             device.enabled = True
@@ -101,12 +102,23 @@ class DeviceLifecycleService:
             device.removed_at = None
             device.removal_reason = None
             device.connection_status = "disconnected"
+            installations = self.session.query(SensorInstallation).filter(
+                SensorInstallation.node_id == device_id,
+                SensorInstallation.provisioning_state == "removed",
+            ).all()
+            for installation in installations:
+                installation.archived = False
+                installation.enabled = True
+                installation.provisioning_state = "active"
+                installation.updated_at = now
             self.session.add(DeviceLifecycleEvent(
                 operation_id=operation_id, event_type="gateway_restored", device_id=device.device_id,
                 display_name=device.display_name, hardware_id=device.hardware_id, ble_address=device.ble_address,
                 connectivity_state="disconnected", method="dashboard_confirmed",
                 factory_reset_requested=False, result="success",
-                detail_json=json.dumps({"identity_verified": True}, separators=(",", ":")),
+                detail_json=json.dumps(
+                    {"identity_verified": True, "installations_restored": len(installations)}, separators=(",", ":")
+                ),
             ))
             self.session.commit()
         except Exception:

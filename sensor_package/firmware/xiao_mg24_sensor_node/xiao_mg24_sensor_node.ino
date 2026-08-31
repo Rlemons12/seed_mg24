@@ -1,7 +1,11 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LSM6DS3.h>
+#include <ArduinoLowPower.h>
+#define ENABLE_MIC 0
+#if ENABLE_MIC
 #include <SilabsMicrophoneAnalog.h>
+#endif
 #include "sensor_config.h"
 #include "sensor_channel.h"
 #include "telemetry_buffer.h"
@@ -10,6 +14,7 @@
 #include "factory_reset.h"
 #include "node_identity_store.h"
 #include "nvm_backend.h"
+#include "persistent_telemetry_journal.h"
 #include "usb_bootstrap.h"
 #include "silabs_additional.h"
 #include "vibration_service.h"
@@ -32,24 +37,39 @@
 #define MIC_SAMPLES 128
 #define MIC_VALUE_MIN 735
 #define MIC_VALUE_MAX 900
-#define ENABLE_MIC 1
 #define ENABLE_IMU 1
 #define ENABLE_ANALOG 1
 #define ENABLE_BATTERY 1
+#define EDGE_SUMMARY_INTERVAL_MS 60000UL
+#define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
+#define LOW_POWER_REPORT_INTERVAL_MS 300000UL
+#define LOW_POWER_SLEEP_SLICE_MS 1000UL
+#define PERSISTENT_SUMMARY_INTERVAL_MS 60000UL
+#define IMU_RETRY_INTERVAL_MS 30000UL
+#define IMU_MAX_INITIALIZATION_ATTEMPTS 5
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 ProductionVibrationService vibration_service(imu, Wire1);
+#if ENABLE_MIC
 MicrophoneAnalog mic(MIC_DATA_PIN, MIC_PWR_PIN);
-
 uint32_t mic_buffer[MIC_SAMPLES];
 uint32_t mic_buffer_local[MIC_SAMPLES];
 volatile bool mic_ready = false;
+#endif
 
 uint32_t sample_interval_ms = 100;
 uint32_t last_sample_ms = 0;
 uint32_t last_heartbeat_ms = 0;
 uint32_t telemetry_sequence = 0;
+char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
+enum TelemetryMode : uint8_t { LIVE_MODE = 0, LOW_POWER_MODE = 1 };
+TelemetryMode reporting_mode = LOW_POWER_MODE;
+uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
+uint32_t last_low_power_report_ms = 0;
+uint32_t last_persistent_summary_ms = 0;
+bool low_power_rails_suspended = false;
+struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
 uint32_t mic_level = 0;
@@ -65,6 +85,12 @@ volatile bool ble_system_booted = false;
 bool application_setup_complete = false;
 bool ble_database_initialized = false;
 bool vibration_initialized = false;
+uint8_t imu_initialization_attempts = 0;
+uint8_t vibration_initialization_attempts = 0;
+uint32_t last_imu_initialization_ms = 0;
+uint32_t last_vibration_initialization_ms = 0;
+int imu_initialization_status = -1;
+uint8_t imu_who_am_i = 0;
 char pending_ble_command[192] = {};
 #if BLE_SUPPORTED
 uint8_t ble_connection_handle = 0xff;
@@ -78,6 +104,7 @@ uint16_t ble_vibration_characteristic_handle = 0;
 #endif
 char telemetry_json[512];
 char ble_json[244];
+char persistent_journal_json[320];
 char vibration_json[seed_mg24::kVibrationSummaryMaximumBytes];
 uint32_t last_vibration_summary_sequence = 0;
 char metadata_json[384];
@@ -90,15 +117,23 @@ SiliconLabsNvm3Backend application_nvm;
 NodeIdentityStore node_identity_store(application_nvm);
 PersistentConfigurationStore runtime_configuration_store(application_nvm);
 FactoryResetController factory_reset_controller(application_nvm);
+PersistentTelemetryJournal persistent_telemetry_journal(application_nvm);
 UsbBootstrapProtocol usb_bootstrap(node_identity_store, runtime_configuration_store, factory_reset_controller);
 NodeIdentity active_identity = {};
 StoreStatus identity_store_status = StoreStatus::Unprovisioned;
 StoreStatus configuration_store_status = StoreStatus::NotFound;
 StoreStatus reset_recovery_status = StoreStatus::Ok;
+StoreStatus telemetry_journal_status = StoreStatus::NotFound;
 bool bootstrap_only = true;
 bool ble_stack_ready = false;
 
 bool application_ble_stack_ready() { return ble_stack_ready; }
+
+bool initialize_imu();
+void enter_low_power_mode();
+void exit_low_power_mode();
+void publish_low_power_snapshot();
+void print_imu_status();
 
 const char* runtime_node_id() {
   return (identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious)
@@ -110,8 +145,10 @@ const uint8_t analog_pins[] = {
 };
 
 void mic_samples_ready_cb() {
+#if ENABLE_MIC
   memcpy(mic_buffer_local, mic_buffer, MIC_SAMPLES * sizeof(uint32_t));
   mic_ready = true;
+#endif
 }
 
 void update_led() {
@@ -149,8 +186,10 @@ static const uuid_128 vibration_characteristic_uuid = {
 void ble_initialize_gatt_db();
 void ble_start_advertising();
 void ble_write_attribute_chunks(uint16_t characteristic, const uint8_t* value, size_t length);
-void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json);
+void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, uint32_t mic_raw, int mic_pct, const char* analog_json, uint32_t sample_count = 1);
 bool ble_send_payload(const char* payload);
+bool ble_send_oldest_buffered();
+void generate_telemetry_boot_id();
 void ble_publish_vibration();
 void ble_initialize_when_ready();
 void ble_refresh_onboarding_identity();
@@ -295,7 +334,7 @@ bool handle_provision_command(const String& command) {
   microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
   microphone_runtime_config.filter_window = verified.filter_window;
   microphone_runtime_config.enabled = verified.enabled != 0;
-  sample_interval_ms = verified.report_interval_ms;
+  sample_interval_ms = verified.sample_interval_ms;
   microphone_channel.reconfigure(&microphone_runtime_config);
 #if BLE_SUPPORTED
   ble_refresh_onboarding_identity();
@@ -362,7 +401,7 @@ bool handle_configuration_transaction(const String& command) {
   microphone_runtime_config.filter_type = (FilterType)verified.filter_type;
   microphone_runtime_config.filter_window = verified.filter_window;
   microphone_runtime_config.enabled = verified.enabled != 0;
-  sample_interval_ms = verified.report_interval_ms;
+  sample_interval_ms = verified.sample_interval_ms;
   microphone_channel.reconfigure(&microphone_runtime_config);
   report_provisioning_state(transaction_id.c_str(), "configured");
   return true;
@@ -380,7 +419,7 @@ bool handle_config_command(const String& command) {
   if (version != "1") { command_result(false, "unsupported_version"); return true; }
   if (channel != "MICROPHONE_RAW") { command_result(false, "unknown_channel"); return true; }
   if (field == "RESTORE" && value.length() == 0) {
-    microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; sample_interval_ms = microphone_runtime_config.report_interval_ms;
+    microphone_runtime_config = MICROPHONE_CHANNEL_CONFIG; sample_interval_ms = microphone_runtime_config.sample_interval_ms;
     microphone_channel.reconfigure(&microphone_runtime_config); command_result(true, "restored"); return true;
   }
   uint32_t numeric = 0;
@@ -409,6 +448,35 @@ void handle_command(String command) {
   }
   command.toUpperCase();
 
+  if (command.startsWith("TACK 2 ")) {
+    int separator = command.indexOf(' ', 7);
+    if (separator < 0) { command_result(false, "invalid_ack"); return; }
+    String acknowledged_boot = command.substring(7, separator);
+    String acknowledged_sequence = command.substring(separator + 1);
+    uint32_t sequence = 0;
+    if (!parse_bounded_uint(acknowledged_sequence, 0, 0xFFFFFFFFUL, &sequence)) {
+      command_result(false, "invalid_ack"); return;
+    }
+    bool journal_matched = false;
+    StoreStatus journal_ack = persistent_telemetry_journal.acknowledge(
+        acknowledged_boot.c_str(), sequence, &journal_matched);
+    if (journal_ack != StoreStatus::Ok) { command_result(false, store_status_name(journal_ack)); return; }
+    if (journal_matched) {
+#if BLE_SUPPORTED
+      ble_send_oldest_buffered();
+#endif
+      return;
+    }
+    if (!acknowledged_boot.equalsIgnoreCase(telemetry_boot_id)) {
+      command_result(false, "invalid_ack"); return;
+    }
+    offline_buffer.acknowledge_through(sequence);
+#if BLE_SUPPORTED
+    ble_send_oldest_buffered();
+#endif
+    return;
+  }
+
   if (bootstrap_only && !command.startsWith("PROV ") && !command.startsWith("PROVGET ")) {
     command_result(false, "bootstrap_only");
     return;
@@ -418,7 +486,12 @@ void handle_command(String command) {
   if (handle_configuration_transaction(command)) return;
 
   if (command == "VIBRATION STATUS" || command == "VIBRATION_STATUS") {
+    print_imu_status();
     vibration_service.printHealth(Serial);
+    return;
+  }
+  if (command == "IMU STATUS" || command == "IMU_STATUS") {
+    print_imu_status();
     return;
   }
 
@@ -446,6 +519,15 @@ void handle_command(String command) {
       sample_interval_ms = value;
       microphone_runtime_config.report_interval_ms = value;
     } else command_result(false, "invalid_rate");
+  } else if (command == "MODE LIVE") {
+    exit_low_power_mode();
+    reporting_mode = LIVE_MODE;
+    memset(&edge, 0, sizeof(edge));
+    command_result(true, "mode_live");
+  } else if (command == "MODE LOW_POWER") {
+    reporting_mode = LOW_POWER_MODE;
+    enter_low_power_mode();
+    command_result(true, "mode_low_power");
   } else if (command == "BLE START") {
     ble_enabled = true;
 #if BLE_SUPPORTED
@@ -461,6 +543,7 @@ void handle_command(String command) {
 }
 
 void update_microphone() {
+#if ENABLE_MIC
   if (!mic_ok) {
     return;
   }
@@ -489,6 +572,112 @@ void update_microphone() {
   }
 
   mic.startSampling(mic_samples_ready_cb);
+#endif
+}
+
+bool initialize_imu() {
+  if (!ENABLE_IMU || imu_initialization_attempts >= IMU_MAX_INITIALIZATION_ATTEMPTS) return false;
+  if (imu_initialization_attempts > 0) {
+    // A failed WHO_AM_I read can leave the sensor rail or bus peripheral in a
+    // bad startup state. Cycle only the IMU rail; identity, NVM, BLE, battery
+    // tracking, and the MCU remain running.
+    digitalWrite(IMU_POWER_PIN, LOW);
+    delay(50);
+    digitalWrite(IMU_POWER_PIN, HIGH);
+    delay(300);
+  }
+  imu_initialization_attempts++;
+  last_imu_initialization_ms = millis();
+  imu.settings.accelRange = 16;
+  imu.settings.accelSampleRate = 416;
+  imu.settings.accelBandWidth = 100;
+  imu.settings.gyroRange = 2000;
+  imu.settings.gyroSampleRate = 416;
+  imu_initialization_status = (int)imu.begin();
+  Wire1.setClock(400000);
+  imu_who_am_i = 0;
+  imu.readRegister(&imu_who_am_i, LSM6DS3_ACC_GYRO_WHO_AM_I_REG);
+  imu_ok = imu_initialization_status == IMU_SUCCESS &&
+      (imu_who_am_i == LSM6DS3_ACC_GYRO_WHO_AM_I || imu_who_am_i == LSM6DS3_C_ACC_GYRO_WHO_AM_I);
+  Serial.print("{\"type\":\"imu_initialization\",\"attempt\":"); Serial.print(imu_initialization_attempts);
+  Serial.print(",\"status\":"); Serial.print(imu_initialization_status);
+  Serial.print(",\"who_am_i\":"); Serial.print(imu_who_am_i);
+  Serial.print(",\"ok\":"); Serial.print(imu_ok ? "true" : "false"); Serial.println("}");
+  if (!imu_ok) sensor_error_count++;
+  return imu_ok;
+}
+
+void enter_low_power_mode() {
+  memset(&edge, 0, sizeof(edge));
+  led_brightness = 0;
+  update_led();
+  digitalWrite(IMU_POWER_PIN, LOW);
+  digitalWrite(BATTERY_ENABLE_PIN, LOW);
+  low_power_rails_suspended = true;
+  last_low_power_report_ms = millis();
+  last_heartbeat_ms = last_low_power_report_ms;
+}
+
+void exit_low_power_mode() {
+  if (!low_power_rails_suspended) return;
+  digitalWrite(BATTERY_ENABLE_PIN, HIGH);
+  digitalWrite(IMU_POWER_PIN, HIGH);
+  delay(300);
+  imu_initialization_attempts = 0;
+  vibration_initialization_attempts = 0;
+  vibration_initialized = false;
+  initialize_imu();
+  low_power_rails_suspended = false;
+}
+
+void publish_low_power_snapshot() {
+  digitalWrite(BATTERY_ENABLE_PIN, HIGH);
+  digitalWrite(IMU_POWER_PIN, HIGH);
+  delay(300);
+
+  imu.settings.accelRange = 16;
+  imu.settings.accelSampleRate = 416;
+  imu.settings.accelBandWidth = 100;
+  imu.settings.gyroRange = 2000;
+  imu.settings.gyroSampleRate = 416;
+  const int status = (int)imu.begin();
+  Wire1.setClock(400000);
+  uint8_t who_am_i = 0;
+  imu.readRegister(&who_am_i, LSM6DS3_ACC_GYRO_WHO_AM_I_REG);
+  const bool snapshot_imu_ok = status == IMU_SUCCESS &&
+      (who_am_i == LSM6DS3_ACC_GYRO_WHO_AM_I || who_am_i == LSM6DS3_C_ACC_GYRO_WHO_AM_I);
+  delay(20);
+
+  const float ax = snapshot_imu_ok ? imu.readFloatAccelX() : 0.0f;
+  const float ay = snapshot_imu_ok ? imu.readFloatAccelY() : 0.0f;
+  const float az = snapshot_imu_ok ? imu.readFloatAccelZ() : 0.0f;
+  const float gx = snapshot_imu_ok ? imu.readFloatGyroX() : 0.0f;
+  const float gy = snapshot_imu_ok ? imu.readFloatGyroY() : 0.0f;
+  const float gz = snapshot_imu_ok ? imu.readFloatGyroZ() : 0.0f;
+  const float batt = battery_voltage();
+  char analog_json[48] = "";
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) {
+    if (i) strlcat(analog_json, ",", sizeof(analog_json));
+    char value[8]; snprintf(value, sizeof(value), "%d", analogRead(analog_pins[i]));
+    strlcat(analog_json, value, sizeof(analog_json));
+  }
+  imu_ok = snapshot_imu_ok;
+#if BLE_SUPPORTED
+  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, 0, 0, analog_json, 1);
+#endif
+  last_heartbeat_ms = millis();
+  if (!snapshot_imu_ok) sensor_error_count++;
+  digitalWrite(IMU_POWER_PIN, LOW);
+  digitalWrite(BATTERY_ENABLE_PIN, LOW);
+  low_power_rails_suspended = true;
+}
+
+void print_imu_status() {
+  Serial.print("{\"type\":\"imu_status\",\"ok\":"); Serial.print(imu_ok ? "true" : "false");
+  Serial.print(",\"initialization_status\":"); Serial.print(imu_initialization_status);
+  Serial.print(",\"who_am_i\":"); Serial.print(imu_who_am_i);
+  Serial.print(",\"initialization_attempts\":"); Serial.print(imu_initialization_attempts);
+  Serial.print(",\"maximum_attempts\":"); Serial.print(IMU_MAX_INITIALIZATION_ATTEMPTS); Serial.println("}");
 }
 
 float battery_voltage() {
@@ -557,8 +746,46 @@ void print_telemetry() {
     Serial.println(telemetry_json);
   }
 #if BLE_SUPPORTED
-  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, mic_pct, analog_json);
+  ble_update_telemetry(batt, ax, ay, az, gx, gy, gz, mic_level, mic_pct, analog_json, 1);
 #endif
+}
+
+void capture_edge_sample() {
+  float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0;
+  if (imu_ok) {
+    seed_mg24::ImuRawSample sample = {};
+    if (vibration_service.latestRawSample(&sample)) {
+      constexpr float accel_g_per_count = 16.0f / 32768.0f;
+      constexpr float gyro_dps_per_count = 2000.0f / 32768.0f;
+      ax = sample.accel_x * accel_g_per_count; ay = sample.accel_y * accel_g_per_count; az = sample.accel_z * accel_g_per_count;
+      gx = sample.gyro_x * gyro_dps_per_count; gy = sample.gyro_y * gyro_dps_per_count; gz = sample.gyro_z * gyro_dps_per_count;
+    }
+  }
+  edge.battery += battery_voltage(); edge.mic += mic_level;
+  edge.accel[0] += ax; edge.accel[1] += ay; edge.accel[2] += az;
+  edge.gyro[0] += gx; edge.gyro[1] += gy; edge.gyro[2] += gz;
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) edge.analog[i] += analogRead(analog_pins[i]);
+  edge.count++;
+}
+
+void publish_edge_summary() {
+  if (!edge.count) return;
+  const double divisor = edge.count;
+  const int average_mic = (int)(edge.mic / divisor);
+  const int mic_pct = map(constrain(average_mic, MIC_VALUE_MIN, MIC_VALUE_MAX), MIC_VALUE_MIN, MIC_VALUE_MAX, 0, 100);
+  char analog_json[48] = "";
+  if (ENABLE_ANALOG) for (size_t i = 0; i < sizeof(analog_pins); ++i) {
+    if (i) strlcat(analog_json, ",", sizeof(analog_json));
+    char value[8]; snprintf(value, sizeof(value), "%d", (int)(edge.analog[i] / divisor));
+    strlcat(analog_json, value, sizeof(analog_json));
+  }
+#if BLE_SUPPORTED
+  ble_update_telemetry((float)(edge.battery / divisor),
+      (float)(edge.accel[0] / divisor), (float)(edge.accel[1] / divisor), (float)(edge.accel[2] / divisor),
+      (float)(edge.gyro[0] / divisor), (float)(edge.gyro[1] / divisor), (float)(edge.gyro[2] / divisor),
+      average_mic, mic_pct, analog_json, edge.count);
+#endif
+  memset(&edge, 0, sizeof(edge));
 }
 
 void setup() {
@@ -575,6 +802,7 @@ void setup() {
     identity_store_status = node_identity_store.load(&active_identity);
     StoredChannelConfiguration stored = {};
     configuration_store_status = runtime_configuration_store.load(&stored);
+    telemetry_journal_status = persistent_telemetry_journal.initialize();
     if (configuration_store_status == StoreStatus::Ok || configuration_store_status == StoreStatus::RecoveredFromPrevious) {
       microphone_runtime_config.sample_interval_ms = stored.sample_interval_ms;
       microphone_runtime_config.processing_interval_ms = stored.processing_interval_ms;
@@ -588,6 +816,7 @@ void setup() {
   } else {
     identity_store_status = nvm_status;
     configuration_store_status = nvm_status;
+    telemetry_journal_status = nvm_status;
   }
   const bool identity_valid = identity_store_status == StoreStatus::Ok || identity_store_status == StoreStatus::RecoveredFromPrevious;
   const bool configuration_valid = configuration_store_status == StoreStatus::Ok
@@ -609,20 +838,9 @@ void setup() {
   delay(300);
   Serial.println("{\"type\":\"boot\",\"step\":\"power\"}");
 
-  imu_ok = false;
-  if (ENABLE_IMU) {
-    // Keep production aligned with the physically validated FIFO configuration.
-    imu.settings.accelRange = 16;
-    imu.settings.accelSampleRate = 416;
-    imu.settings.accelBandWidth = 100;
-    imu.settings.gyroRange = 2000;
-    imu.settings.gyroSampleRate = 416;
-    imu_ok = (imu.begin() == 0);
-    // imu.begin() initializes the onboard Wire1 bus and restores its default
-    // clock, so apply the validated 400 kHz setting afterward.
-    // The onboard LSM6DS3 is on Wire1 (PB2/PB3), not the header Wire bus.
-    Wire1.setClock(400000);
-  }
+  // Retry transient WHO_AM_I/I2C startup failures without resetting identity,
+  // configuration, BLE, or the rest of the sensor application.
+  imu_ok = initialize_imu();
   Serial.print("{\"type\":\"boot\",\"step\":\"imu\",\"ok\":");
   Serial.print(imu_ok ? "true" : "false");
   Serial.println("}");
@@ -631,16 +849,16 @@ void setup() {
   // startup operation is intentionally allowed to complete without filling the
   // FIFO; normal advertising is not delayed waiting for a vibration window.
 
-  if (ENABLE_MIC) {
-    mic.begin(mic_buffer, MIC_SAMPLES);
-    mic_ok = true;
-  }
+#if ENABLE_MIC
+  mic.begin(mic_buffer, MIC_SAMPLES);
+  mic_ok = true;
+#endif
   Serial.print("{\"type\":\"boot\",\"step\":\"mic\",\"ok\":");
   Serial.print(mic_ok ? "true" : "false");
   Serial.println("}");
-  if (mic_ok) {
-    mic.startSampling(mic_samples_ready_cb);
-  }
+#if ENABLE_MIC
+  if (mic_ok) mic.startSampling(mic_samples_ready_cb);
+#endif
 
   Serial.print("{\"type\":\"boot\",\"step\":\"ble\",\"supported\":");
   Serial.print(BLE_SUPPORTED ? "true" : "false");
@@ -652,6 +870,7 @@ void setup() {
   update_led();
   Serial.println("{\"type\":\"hello\",\"board\":\"Seeed Studio XIAO MG24 Sense\",\"baud\":115200}");
   application_setup_complete = true;
+  enter_low_power_mode();
 }
 
 #if BLE_SUPPORTED
@@ -660,10 +879,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_system_boot_id:
       ble_stack_ready = true;
       ble_system_booted = true;
+      generate_telemetry_boot_id();
       break;
     case sl_bt_evt_connection_opened_id:
       ble_connection_handle = evt->data.evt_connection_opened.connection;
       ble_connected = true;
+      persistent_telemetry_journal.discard_staging();
       break;
     case sl_bt_evt_connection_closed_id:
       ble_connection_handle = 0xff;
@@ -675,6 +896,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
     case sl_bt_evt_gatt_server_characteristic_status_id:
       if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_telemetry_characteristic_handle) {
         ble_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
+        if (ble_notify_enabled) ble_send_oldest_buffered();
       } else if (evt->data.evt_gatt_server_characteristic_status.characteristic == ble_vibration_characteristic_handle) {
         ble_vibration_notify_enabled = evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification;
       }
@@ -760,8 +982,7 @@ void ble_initialize_gatt_db() {
 
   snprintf(capabilities_json, sizeof(capabilities_json),
            "{\"schema_version\":1,\"node_id\":\"%s\",\"firmware_version\":\"%s\","
-           "\"interfaces\":[{\"interface_id\":\"MIC\",\"type\":\"built_in\",\"capabilities\":[\"built_in_microphone\"]},"
-           "{\"interface_id\":\"IMU0\",\"type\":\"built_in\",\"capabilities\":[\"built_in_imu_accelerometer\",\"built_in_imu_gyroscope\"]},"
+           "\"interfaces\":[{\"interface_id\":\"IMU0\",\"type\":\"built_in\",\"capabilities\":[\"built_in_imu_accelerometer\",\"built_in_imu_gyroscope\"]},"
            "{\"interface_id\":\"VBAT\",\"type\":\"built_in\",\"capabilities\":[\"built_in_battery\"]},"
            "{\"interface_id\":\"D0\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D1\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
@@ -770,8 +991,10 @@ void ble_initialize_gatt_db() {
            "{\"interface_id\":\"D4\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]},"
            "{\"interface_id\":\"D5\",\"type\":\"analog\",\"capabilities\":[\"raw_adc\"]}],"
            "\"processing\":{\"filters\":[\"none\",\"ema\",\"moving_average\",\"median\",\"digital_debounce\"],"
-           "\"reporting_modes\":[\"periodic\",\"change\",\"event\",\"heartbeat\"]},"
-           "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true}}",
+           "\"reporting_modes\":[\"live\",\"low_power\"]},"
+           "\"configuration\":{\"persistence\":\"nvm3_redundant_crc32\",\"readback\":true},"
+           "\"data_management\":{\"telemetry_version\":2,\"boot_id\":true,\"persistence_ack\":true,\"backlog_ack\":true,"
+           "\"flash_journal\":true,\"flash_summary_interval_seconds\":60,\"flash_summary_capacity\":32,\"flash_batch_size\":4}}",
            runtime_node_id(), FIRMWARE_VERSION);
   sc = sl_bt_gattdb_add_uuid128_characteristic(session_id, telemetry_service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_READ,
@@ -870,36 +1093,80 @@ void ble_start_advertising() {
   app_assert_status(sc);
 }
 
-void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, int mic_pct, const char* analog_json) {
+void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, float gy, float gz, uint32_t mic_raw, int mic_pct, const char* analog_json, uint32_t sample_count) {
   if (!ble_enabled || ble_telemetry_characteristic_handle == 0) {
     return;
   }
 
-  snprintf(ble_json, sizeof(ble_json),
-           "{\"t\":\"tele\",\"v\":1,\"s\":%lu,\"ms\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,"
-           "\"bs\":1,\"be\":%d,\"bc\":%d,\"imu\":%d,\"mk\":%d,"
+  const uint32_t record_sequence = telemetry_sequence++;
+  const uint32_t record_uptime = millis();
+  int written = snprintf(ble_json, sizeof(ble_json),
+           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,\"io\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
-           (unsigned long)telemetry_sequence++, millis(), mic_level, mic_pct, batt, led_brightness,
-           ble_enabled ? 1 : 0, ble_connected ? 1 : 0, imu_ok ? 1 : 0, mic_ok ? 1 : 0,
+           runtime_node_id(), telemetry_boot_id, (unsigned long)record_sequence, (unsigned long)record_uptime,
+           (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness, imu_ok ? 1 : 0,
            ax, ay, az, gx, gy, gz, analog_json);
+  if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
+    processing_error_count++;
+    return;
+  }
   char current_telemetry[sizeof(ble_json)];
   strlcpy(current_telemetry, ble_json, sizeof(current_telemetry));
 
-  if (!ble_connected) {
-    TelemetryRecord record = {};
-    record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
-    record.sequence_number = telemetry_sequence - 1; record.uptime_ms = millis();
-    strlcpy(record.channel_id, "microphone_raw", sizeof(record.channel_id));
-    record.raw_value = mic_level; record.normalized_value = 0; record.has_normalized_value = false;
-    record.quality = MeasurementQuality::Uncalibrated; record.state = MonitoringState::Normal; record.delayed = false;
-    offline_buffer.push(record);
-  } else {
-    TelemetryRecord delayed;
-    if (offline_buffer.pop(&delayed) && encode_record(delayed, runtime_node_id(), ble_json, sizeof(ble_json))) {
-      ble_send_payload(ble_json);
-    }
-    ble_send_payload(current_telemetry);
+  TelemetryRecord record = {};
+  record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
+  record.sequence_number = record_sequence; record.uptime_ms = record_uptime;
+  strlcpy(record.payload, current_telemetry, sizeof(record.payload));
+  offline_buffer.push(record);
+  if (!ble_connected && elapsed_since(record_uptime, last_persistent_summary_ms, PERSISTENT_SUMMARY_INTERVAL_MS)) {
+    last_persistent_summary_ms = record_uptime;
+    PersistentTelemetrySummary summary = {};
+    strlcpy(summary.boot_id, telemetry_boot_id, sizeof(summary.boot_id));
+    summary.sequence_number = record_sequence; summary.uptime_ms = record_uptime;
+    summary.battery_voltage = batt; summary.sample_count = (uint16_t)min((uint32_t)0xFFFF, max(1UL, sample_count));
+    summary.flags = imu_ok ? 1 : 0;
+    summary.acceleration[0] = ax; summary.acceleration[1] = ay; summary.acceleration[2] = az;
+    summary.angular_velocity[0] = gx; summary.angular_velocity[1] = gy; summary.angular_velocity[2] = gz;
+    StoreStatus stored = persistent_telemetry_journal.append(summary);
+    if (stored != StoreStatus::Ok) processing_error_count++;
   }
+  ble_send_oldest_buffered();
+  microphone_channel.mark_reported(millis());
+}
+
+bool ble_send_oldest_buffered() {
+  if (!ble_connected || !ble_notify_enabled) return false;
+  PersistentTelemetrySummary summary = {};
+  if (persistent_telemetry_journal.peek(&summary)) {
+    const bool same_boot = !strcmp(summary.boot_id, telemetry_boot_id);
+    const uint32_t replay_age_ms = same_boot ? millis() - summary.uptime_ms : 0;
+    const char* age_prefix = same_boot ? ",\"jm\":" : "";
+    char age_value[16] = "";
+    if (same_boot) snprintf(age_value, sizeof(age_value), "%lu", (unsigned long)replay_age_ms);
+    int written = snprintf(persistent_journal_json, sizeof(persistent_journal_json),
+        "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%u,\"bv\":%.3f,\"io\":%d,"
+        "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[],\"d\":1,\"pj\":1%s%s}",
+        runtime_node_id(), summary.boot_id, (unsigned long)summary.sequence_number,
+        (unsigned long)summary.uptime_ms, summary.sample_count, summary.battery_voltage,
+        summary.flags & 1, summary.acceleration[0], summary.acceleration[1], summary.acceleration[2],
+        summary.angular_velocity[0], summary.angular_velocity[1], summary.angular_velocity[2], age_prefix, age_value);
+    if (written <= 0 || (size_t)written >= sizeof(persistent_journal_json)) { processing_error_count++; return false; }
+    return ble_send_payload(persistent_journal_json);
+  }
+  TelemetryRecord record = {};
+  return offline_buffer.peek_oldest(&record) && ble_send_payload(record.payload);
+}
+
+void generate_telemetry_boot_id() {
+  uint8_t random_bytes[8] = {};
+  size_t random_length = 0;
+  sl_status_t status = sl_bt_system_get_random_data(sizeof(random_bytes), sizeof(random_bytes), &random_length, random_bytes);
+  if (status != SL_STATUS_OK || random_length != sizeof(random_bytes)) {
+    processing_error_count++;
+    for (size_t i = 0; i < sizeof(random_bytes); ++i) random_bytes[i] = (uint8_t)(micros() >> ((i % 4) * 8));
+  }
+  for (size_t i = 0; i < sizeof(random_bytes); ++i) snprintf(telemetry_boot_id + i * 2, 3, "%02x", random_bytes[i]);
+  telemetry_sequence = 1;
 }
 
 bool ble_send_payload(const char* payload) {
@@ -948,16 +1215,27 @@ void loop() {
 #if BLE_SUPPORTED
   ble_initialize_when_ready();
 #endif
-  if (!vibration_initialized && imu_ok
+  const uint32_t initialization_now = millis();
+  if (!imu_ok && imu_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
+      elapsed_since(initialization_now, last_imu_initialization_ms, IMU_RETRY_INTERVAL_MS)) {
+    initialize_imu();
+  }
+  if (!vibration_initialized && imu_ok &&
+      vibration_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
+      (vibration_initialization_attempts == 0 ||
+       elapsed_since(initialization_now, last_vibration_initialization_ms, IMU_RETRY_INTERVAL_MS))
 #if BLE_SUPPORTED
       && ble_database_initialized
 #endif
   ) {
-    vibration_initialized = true;
+    vibration_initialization_attempts++;
+    last_vibration_initialization_ms = initialization_now;
     const bool vibration_ok = vibration_service.begin();
+    vibration_initialized = vibration_ok;
     Serial.print("{\"type\":\"boot\",\"step\":\"vibration\",\"ok\":");
     Serial.print(vibration_ok ? "true" : "false");
-    Serial.println("}");
+    Serial.print(",\"attempt\":"); Serial.print(vibration_initialization_attempts); Serial.println("}");
+    if (!vibration_ok) sensor_error_count++;
   }
 #if BLE_SUPPORTED
   if (ble_command_pending) {
@@ -978,7 +1256,7 @@ void loop() {
     // A disconnected host can leave a partial request buffered. A new framed
     // bootstrap request always starts with 'M', so resynchronize instead of
     // concatenating two transactions and misreading their schema fields.
-    if (c == 'M' && serial_length > 0) {
+    if (c == 'M' && serial_length > 0 && Serial.peek() == 'G') {
       serial_length = 0;
       serial_overflow = false;
     }
@@ -1005,28 +1283,46 @@ void loop() {
   if (factory_reset_controller.busy()) bootstrap_only = true;
   // Vibration failure is isolated: FIFO/DSP health never gates BLE, identity,
   // provisioning, or the existing telemetry path.
-  if (!factory_reset_controller.busy()) vibration_service.service();
+  if (!factory_reset_controller.busy() && reporting_mode != LOW_POWER_MODE) vibration_service.service();
 #if BLE_SUPPORTED
-  ble_publish_vibration();
+  const uint32_t vibration_now = millis();
+  if (reporting_mode == LIVE_MODE) {
+    last_edge_vibration_ms = vibration_now;
+    ble_publish_vibration();
+  }
 #endif
   if (bootstrap_only) { delay(5); return; }
   update_microphone();
 
   const uint32_t now = millis();
-  if (elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
+  if (reporting_mode == LIVE_MODE &&
+      elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
     last_sample_ms = now;
     print_telemetry();
+  } else if (reporting_mode == LOW_POWER_MODE &&
+      elapsed_since(now, last_low_power_report_ms, LOW_POWER_REPORT_INTERVAL_MS)) {
+    last_low_power_report_ms = now;
+    publish_low_power_snapshot();
   }
 #if BLE_SUPPORTED
-  if (ble_connected && elapsed_since(now, last_heartbeat_ms, microphone_runtime_config.heartbeat_interval_ms)) {
+  const uint32_t heartbeat_interval = reporting_mode == LOW_POWER_MODE
+      ? LOW_POWER_REPORT_INTERVAL_MS
+      : microphone_runtime_config.heartbeat_interval_ms;
+  if (ble_connected && elapsed_since(now, last_heartbeat_ms, heartbeat_interval)) {
     last_heartbeat_ms = now;
     if (encode_heartbeat(telemetry_sequence++, now, battery_voltage(), offline_buffer.size(),
                          offline_buffer.dropped_count(), processing_error_count, sensor_error_count,
-                         runtime_node_id(), ble_json, sizeof(ble_json))) {
-      ble_send_payload(ble_json);
+                         runtime_node_id(), telemetry_boot_id, ble_json, sizeof(ble_json))) {
+      TelemetryRecord heartbeat = {};
+      heartbeat.type = RecordType::Heartbeat; heartbeat.priority = RecordPriority::Heartbeat;
+      heartbeat.sequence_number = telemetry_sequence - 1; heartbeat.uptime_ms = now;
+      strlcpy(heartbeat.payload, ble_json, sizeof(heartbeat.payload));
+      offline_buffer.push(heartbeat);
+      ble_send_oldest_buffered();
     } else {
       processing_error_count++;
     }
   }
 #endif
+  if (reporting_mode == LOW_POWER_MODE) LowPower.sleep(LOW_POWER_SLEEP_SLICE_MS);
 }

@@ -62,3 +62,47 @@ def test_command_endpoint_rejects_non_allowlisted_input(client, compatible_disco
     )
     response = client.post("/api/devices/ARM2001-01/commands", json={"command": "BLE START"})
     assert response.status_code == 422
+
+
+def test_command_endpoint_requires_same_origin(client, compatible_discovery):
+    client.post(
+        "/api/devices",
+        json={"device_id": "ARM2001-01", "display_name": "Node", "discovery_address": compatible_discovery.address},
+    )
+    response = client.post(
+        "/api/devices/ARM2001-01/commands",
+        json={"command": "MODE LIVE"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert response.status_code == 403
+
+
+def test_identify_endpoint_runs_bounded_pattern(client, app, compatible_discovery):
+    client.post(
+        "/api/devices",
+        json={"device_id": "ARM2001-01", "display_name": "Node", "discovery_address": compatible_discovery.address},
+    )
+    calls = []
+
+    async def identify(device_id):
+        calls.append(device_id)
+
+    app.state.ble_manager.identify = identify
+    response = client.post("/api/devices/ARM2001-01/identify", json={})
+    assert response.status_code == 200
+    assert response.json() == {
+        "accepted": True, "device_id": "ARM2001-01",
+        "pattern": "three-short-one-long", "final_led_state": "off",
+    }
+    assert calls == ["ARM2001-01"]
+
+
+def test_identify_endpoint_requires_same_origin(client, compatible_discovery):
+    client.post(
+        "/api/devices",
+        json={"device_id": "ARM2001-01", "display_name": "Node", "discovery_address": compatible_discovery.address},
+    )
+    response = client.post(
+        "/api/devices/ARM2001-01/identify", json={}, headers={"Origin": "https://evil.example"},
+    )
+    assert response.status_code == 403

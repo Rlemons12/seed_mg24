@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPOSITORY_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -29,9 +29,30 @@ class Settings(BaseSettings):
     history_max_days: int = Field(31, ge=1, le=366)
     history_retention_days: int | None = Field(default=None, ge=1, le=36500)
     history_retention_batch_size: int = Field(1000, ge=100, le=10000)
+    sqlite_wal_checkpoint_interval_seconds: float = Field(300.0, ge=30, le=86400)
+    live_mode_max_seconds: float = Field(600.0, ge=30, le=86400)
     vibration_baseline_minimum_windows: int = Field(100, ge=20, le=10000)
     vibration_condition_persistence_windows: int = Field(3, ge=1, le=100)
     vibration_persistence_interval_seconds: float = Field(5.0, ge=0.5, le=3600)
+    battery_minimum_voltage_rise: float = Field(0.12, gt=0, le=5)
+    battery_voltage_noise_floor: float = Field(0.02, ge=0, le=1)
+    battery_charge_confirmation_seconds: float = Field(120.0, ge=1, le=86400)
+    battery_charge_minimum_samples: int = Field(3, ge=2, le=1000)
+    battery_stable_voltage_seconds: float = Field(300.0, ge=1, le=86400)
+    battery_maximum_sample_gap_seconds: float = Field(900.0, ge=1, le=604800)
+    battery_baseline_minimum_cycles: int = Field(5, ge=2, le=100)
+    battery_aging_runtime_ratio: float = Field(0.90, gt=0, le=1)
+    battery_plan_replacement_runtime_ratio: float = Field(0.75, gt=0, le=1)
+    battery_replace_runtime_ratio: float = Field(0.60, gt=0, le=1)
+    battery_required_degraded_cycles: int = Field(3, ge=2, le=20)
+    battery_maximum_unobserved_ratio: float = Field(0.25, ge=0, lt=1)
+    battery_recharge_warning_seconds: float = Field(172800.0, ge=60, le=31536000)
+    battery_trend_lookback_cycles: int = Field(6, ge=3, le=50)
+    battery_alert_cooldown_seconds: float = Field(86400.0, ge=60, le=31536000)
+    battery_processing_interval_seconds: float = Field(5.0, ge=1.0, le=3600)
+    battery_low_voltage_warning: float | None = Field(default=None, gt=0, le=10)
+    battery_low_voltage_critical: float | None = Field(default=None, gt=0, le=10)
+    battery_voltage_prediction_min_decline_per_hour: float = Field(0.002, gt=0, le=1)
     gateway_id: str | None = None
     sensor_profile_directory: Path = Path("./data/sensor_profiles")
     max_profile_upload_bytes: int = Field(65536, ge=1024, le=1048576)
@@ -49,10 +70,29 @@ class Settings(BaseSettings):
             raise ValueError("unsupported log level")
         return value
 
-    @field_validator("history_retention_days", "gateway_id", mode="before")
+    @field_validator(
+        "history_retention_days", "gateway_id", "battery_low_voltage_warning", "battery_low_voltage_critical",
+        mode="before",
+    )
     @classmethod
     def blank_is_disabled(cls, value):
         return None if value == "" else value
+
+    @model_validator(mode="after")
+    def validate_battery_policy(self):
+        if not (
+            self.battery_replace_runtime_ratio
+            < self.battery_plan_replacement_runtime_ratio
+            <= self.battery_aging_runtime_ratio
+        ):
+            raise ValueError("battery runtime thresholds must satisfy replace < plan replacement <= aging")
+        if (
+            self.battery_low_voltage_warning is not None
+            and self.battery_low_voltage_critical is not None
+            and self.battery_low_voltage_critical >= self.battery_low_voltage_warning
+        ):
+            raise ValueError("battery critical voltage must be below warning voltage")
+        return self
 
     def ensure_runtime_directories(self) -> None:
         if self.database_url.startswith("sqlite:///"):

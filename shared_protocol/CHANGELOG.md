@@ -1,5 +1,10 @@
 # Shared protocol changelog
 
+## 1.1.0 data-management extension
+
+- Add backward-compatible telemetry schema version 2 fields for a random per-boot ID and aggregate sample count.
+- Add capability-negotiated SQLite persistence acknowledgements and replay semantics; schema version 1 remains unacknowledged legacy telemetry.
+
 ## 1.1.0
 
 - Add the optional `0700004d-4724-2480-2d4d-47240024beef` vibration-summary

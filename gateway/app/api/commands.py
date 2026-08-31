@@ -9,6 +9,22 @@ from gateway.app.schemas import CommandRequest, CommandResponse
 router = APIRouter(prefix="/api/devices", tags=["commands"])
 
 
+@router.post("/{device_id}/identify")
+async def identify_device(device_id: str, request: Request, session: Session = Depends(get_session)) -> dict:
+    device = DeviceRepository(session).get(device_id)
+    if device is None or device.archived:
+        raise HTTPException(status_code=404, detail="device not found")
+    try:
+        await request.app.state.ble_manager.identify(device_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="device identification timed out") from exc
+    return {"accepted": True, "device_id": device_id, "pattern": "three-short-one-long", "final_led_state": "off"}
+
+
 @router.post("/{device_id}/commands", response_model=CommandResponse)
 async def send_command(device_id: str, body: CommandRequest, request: Request, session: Session = Depends(get_session)) -> CommandResponse:
     device = DeviceRepository(session).get(device_id)

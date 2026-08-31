@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from gateway.app.database import Base
@@ -193,6 +193,7 @@ class Reading(Base):
         Index("ix_readings_channel_received", "channel", "received_at"),
         Index("ix_readings_gateway_received", "gateway_id", "received_at"),
         UniqueConstraint("registered_device_id", "session_id", "sequence_number", "channel", name="uq_reading_sequence_channel"),
+        UniqueConstraint("registered_device_id", "sensor_boot_id", "sequence_number", "channel", name="uq_reading_boot_sequence_channel"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -204,6 +205,8 @@ class Reading(Base):
     measured_at_device_uptime: Mapped[int | None] = mapped_column(Integer, nullable=True)
     device_uptime_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sequence_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sensor_boot_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    sample_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False)
     record_type: Mapped[str] = mapped_column(String(24), nullable=False, default="measurement")
     channel: Mapped[str] = mapped_column(String(96), nullable=False)
@@ -216,6 +219,144 @@ class Reading(Base):
     installation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     interface_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     device: Mapped[RegisteredDevice] = relationship(back_populates="readings")
+
+
+class TelemetrySyncState(Base):
+    __tablename__ = "telemetry_sync_states"
+    __table_args__ = (
+        UniqueConstraint("registered_device_id", "sensor_boot_id", name="uq_telemetry_sync_device_boot"),
+        Index("ix_telemetry_sync_device_updated", "registered_device_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    sensor_boot_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    first_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    highest_contiguous_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    highest_seen_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    missing_sequence_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+
+class BatteryGeneration(Base):
+    __tablename__ = "battery_generations"
+    __table_args__ = (
+        UniqueConstraint("registered_device_id", "generation_number", name="uq_battery_generation_device_number"),
+        Index("ix_battery_generation_device_started", "registered_device_id", "started_at"),
+        Index(
+            "ux_battery_generation_current_device", "registered_device_id", unique=True,
+            sqlite_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    generation_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    start_reason: Mapped[str] = mapped_column(String(32), nullable=False, default="INITIAL_OBSERVATION")
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class BatteryCycle(Base):
+    __tablename__ = "battery_cycles"
+    __table_args__ = (
+        UniqueConstraint("battery_generation_id", "cycle_number", name="uq_battery_cycle_generation_number"),
+        Index("ix_battery_cycle_device_started", "registered_device_id", "started_at"),
+        Index("ix_battery_cycle_generation_started", "battery_generation_id", "started_at"),
+        Index(
+            "ux_battery_cycle_active_device", "registered_device_id", unique=True,
+            sqlite_where=text("is_complete = 0"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    battery_generation_id: Mapped[int] = mapped_column(ForeignKey("battery_generations.id", ondelete="RESTRICT"), nullable=False)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    start_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    runtime_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    observed_operating_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    unobserved_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    telemetry_records_sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sensor_reboot_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    vibration_window_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    configuration_change_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    start_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    end_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    charge_detection_confidence: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    is_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_baseline_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    exclusion_reason: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    runtime_anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    runtime_health_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    observability_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    firmware_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    protocol_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    configuration_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sensor_boot_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class BatteryDetectorState(Base):
+    __tablename__ = "battery_detector_states"
+
+    registered_device_id: Mapped[int] = mapped_column(
+        ForeignKey("registered_devices.id", ondelete="RESTRICT"), primary_key=True
+    )
+    state: Mapped[str] = mapped_column(String(32), nullable=False, default="DISCHARGING")
+    candidate_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_start_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    candidate_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    peak_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stable_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_voltage: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_sample_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class BatteryReplacementEvent(Base):
+    __tablename__ = "battery_replacement_events"
+    __table_args__ = (Index("ix_battery_replacement_device_replaced", "registered_device_id", "replaced_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    old_battery_generation_id: Mapped[int] = mapped_column(ForeignKey("battery_generations.id", ondelete="RESTRICT"), nullable=False)
+    new_battery_generation_id: Mapped[int] = mapped_column(ForeignKey("battery_generations.id", ondelete="RESTRICT"), nullable=False)
+    replaced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(240), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    previous_runtime_health_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    previous_cycle_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="operator")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class BatteryAlert(Base):
+    __tablename__ = "battery_alerts"
+    __table_args__ = (
+        Index("ix_battery_alert_device_created", "registered_device_id", "created_at"),
+        Index("ix_battery_alert_dedupe", "registered_device_id", "alert_type", "last_emitted_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    registered_device_id: Mapped[int] = mapped_column(ForeignKey("registered_devices.id", ondelete="RESTRICT"), nullable=False)
+    alert_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    detail_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    first_emitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_emitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class VibrationWindow(Base):

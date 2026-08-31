@@ -16,6 +16,18 @@ def test_existing_readings_table_migrates_without_data_loss(tmp_path):
         assert connection.scalar(text("SELECT COUNT(*) FROM readings")) == 1
 
 
+def test_data_management_schema_is_additive_and_idempotent(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'data-management.db'}")
+    initialize_database(engine)
+    initialize_database(engine)
+    inspector = inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("readings")}
+    assert {"sensor_boot_id", "sample_count"} <= columns
+    assert "telemetry_sync_states" in inspector.get_table_names()
+    indexes = {item["name"] for item in inspector.get_indexes("readings")}
+    assert "ix_readings_device_boot_sequence" in indexes
+
+
 def test_registered_device_lifecycle_columns_and_event_table_are_additive(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'legacy-devices.db'}")
     with engine.begin() as connection:
@@ -73,3 +85,42 @@ def test_vibration_relearn_schema_is_additive_to_existing_tables(tmp_path):
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT COUNT(*) FROM vibration_baselines")) == 1
         assert connection.scalar(text("SELECT COUNT(*) FROM vibration_windows")) == 1
+
+
+def test_battery_cycle_schema_is_additive_and_enforces_one_active_cycle(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'battery.db'}")
+    initialize_database(engine)
+    initialize_database(engine)
+    inspector = inspect(engine)
+    assert {
+        "battery_generations", "battery_cycles", "battery_detector_states",
+        "battery_replacement_events", "battery_alerts",
+    } <= set(inspector.get_table_names())
+    cycle_indexes = {item["name"] for item in inspector.get_indexes("battery_cycles")}
+    assert {"ix_battery_cycle_device_started", "ux_battery_cycle_active_device"} <= cycle_indexes
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO registered_devices(id,device_id,display_name,device_type,enabled,archived,"
+            "compatibility_status,created_at,updated_at,connection_status,lifecycle_state,factory_reset_status) "
+            "VALUES(1,'BAT-1','Battery fixture','test',1,0,'compatible',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,"
+            "'disconnected','active','not_requested')"
+        ))
+        connection.execute(text(
+            "INSERT INTO battery_generations(id,registered_device_id,generation_number,started_at,start_reason,"
+            "created_at,updated_at) VALUES(1,1,1,CURRENT_TIMESTAMP,'INITIAL_OBSERVATION',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+        connection.execute(text(
+            "INSERT INTO battery_cycles(registered_device_id,battery_generation_id,cycle_number,started_at,"
+            "observed_operating_seconds,unobserved_seconds,telemetry_records_sent,sensor_reboot_count,event_count,"
+            "vibration_window_count,configuration_change_count,start_reason,charge_detection_confidence,is_complete,"
+            "is_baseline_eligible,created_at,updated_at) VALUES(1,1,1,CURRENT_TIMESTAMP,0,0,0,0,0,0,0,'FIRST_SAMPLE',"
+            "'LOW',0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+        ))
+        with pytest.raises(IntegrityError):
+            connection.execute(text(
+                "INSERT INTO battery_cycles(registered_device_id,battery_generation_id,cycle_number,started_at,"
+                "observed_operating_seconds,unobserved_seconds,telemetry_records_sent,sensor_reboot_count,event_count,"
+                "vibration_window_count,configuration_change_count,start_reason,charge_detection_confidence,is_complete,"
+                "is_baseline_eligible,created_at,updated_at) VALUES(1,1,2,CURRENT_TIMESTAMP,0,0,0,0,0,0,0,'MANUAL_CHARGE',"
+                "'HIGH',0,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
+            ))

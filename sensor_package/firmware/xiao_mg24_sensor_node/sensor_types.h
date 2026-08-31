@@ -67,6 +67,7 @@ struct TelemetryRecord {
   MonitoringState state;
   bool has_normalized_value;
   bool delayed;
+  char payload[244];
 };
 
 inline bool elapsed_since(uint32_t now, uint32_t previous, uint32_t interval) {

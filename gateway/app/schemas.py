@@ -85,6 +85,13 @@ class DeviceResponse(BaseModel):
     removal_reason: str | None
     factory_reset_status: str
     last_error: str | None = None
+    reporting_mode: Literal["LIVE", "LOW_POWER", "UNKNOWN"] = "UNKNOWN"
+    low_power_wake_interval_seconds: int = 300
+    low_power_next_wake_at: datetime | None = None
+    low_power_seconds_to_next_wake: int | None = None
+    live_on_next_wake: bool = False
+    live_mode_ends_at: datetime | None = None
+    low_power_on_next_wake: bool = False
     rssi: int | None = None
 
 
@@ -156,6 +163,8 @@ class NormalizedTelemetry(BaseModel):
     record_type: Literal["measurement", "event", "heartbeat", "config_ack", "config_error", "burst_fragment", "vibration"]
     device_uptime_ms: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
     sequence_number: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    sensor_boot_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
+    sample_count: int | None = Field(default=None, ge=1, le=0xFFFFFFFF)
     received_at: datetime
     delayed: bool = False
     event: str | None = Field(default=None, max_length=96)
@@ -176,6 +185,8 @@ class ReadingResponse(BaseModel):
     measured_at_device_uptime: int | None
     device_uptime_ms: int | None
     sequence_number: int | None
+    sensor_boot_id: str | None
+    sample_count: int | None
     session_id: str
     record_type: str
     channel: str

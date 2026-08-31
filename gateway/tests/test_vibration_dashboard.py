@@ -44,6 +44,24 @@ def test_condition_state_mapping_and_current_vs_baseline_calculation():
     assert result["comparison"]["percent"] == 100
 
 
+def test_imu_sensor_fault_is_distinguished_from_waiting_for_first_summary():
+    source = (STATIC / "vibration_monitoring.js").read_text(encoding="utf-8")
+    module = (STATIC / "vibration_monitoring.js").as_posix()
+    result = run_node(f"""
+      const ui = require({json.dumps(module)});
+      console.log(JSON.stringify({{
+        fault: ui.hasImuSensorFault([
+          {{channel:"temperature", quality:"good"}},
+          {{channel:"acceleration_x", quality:"sensor_fault"}}
+        ]),
+        healthy: ui.hasImuSensorFault([{{channel:"angular_velocity_x", quality:"good"}}])
+      }}));
+    """)
+    assert result == {"fault": True, "healthy": False}
+    assert "IMU sensor fault: the accelerometer/gyroscope is not responding" in source
+    assert "/readings/latest" in source
+
+
 def test_all_requested_chart_metrics_map_valid_axis_history_and_ignore_invalid_windows():
     module = (STATIC / "vibration_monitoring.js").as_posix()
     result = run_node(f"""
@@ -88,6 +106,13 @@ def test_history_ranges_are_utc_ordered_across_timezones_boundaries_and_dst():
     assert all(item["start"] < item["end"] and item["duration"] == 15 * 60 * 1000 for item in result["ranges"])
     assert all(item["start"].endswith("Z") and item["end"].endswith("Z") for item in result["ranges"])
     assert result["naiveUtc"] == result["explicitUtc"]
+
+
+def test_vibration_dashboard_offers_a_24_hour_history_range():
+    source = (STATIC / "vibration_monitoring.js").read_text()
+    app = (STATIC / "app.js").read_text()
+    assert '"24h": 86400' in source
+    assert '["24h", "24 hours"]' in app
 
 
 def test_future_incremental_anchor_is_blocked_before_history_api_call():
@@ -186,6 +211,16 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert "mg24:vibration-summary" in app
     assert "other.setAttribute(\"aria-expanded\", \"false\")" in disclosure
     assert ".sensor-tabs" in css and ".sensor-summary__status" in css
+    assert 'el("button", "Identify Sensor")' in app
+    assert "/identify" in app
+    assert "blinked three times quickly and once slowly" in app
+    assert 'el("button", "Use Low Power")' in app
+    assert 'command:"MODE LOW_POWER"' in app
+    assert 'el("button", "Go Live on Next Wake")' in app
+    assert 'command:"MODE LIVE_NEXT_WAKE"' in app
+    assert "Next low-power wake in" in app
+    assert "return to Low Power automatically" in app
+    assert "vibration windows are paused" in app
     assert ".live-input-grid--compact" in css
 
 

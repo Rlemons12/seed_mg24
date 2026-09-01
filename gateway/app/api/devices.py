@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 
 def _response(request: Request, device) -> DeviceResponse:
-    runtime = request.app.state.ble_manager.runtime(device.device_id, device.last_seen_at)
+    runtime = request.app.state.ble_manager.runtime(device.device_id)
     if runtime["connection_status"] == "connected" and device.last_seen_at is not None:
         last_seen = device.last_seen_at
         if last_seen.tzinfo is None:

@@ -104,6 +104,30 @@ async def test_conflicting_duplicate_is_rejected_without_ack(settings):
 
 
 @pytest.mark.asyncio
+async def test_delayed_replay_marker_does_not_conflict_with_persisted_packet(settings):
+    acknowledgements = []
+
+    async def sender(*args):
+        acknowledgements.append(args)
+
+    _engine, factory, service = setup_service(settings, sender)
+    boot = "0123456789abcdef"
+    original = packet(boot, 8, 12)
+    replay = json.loads(original)
+    replay["d"] = 1
+    await service.ingest("ARM2001-01", original)
+    assert await service.ingest(
+        "ARM2001-01", json.dumps(replay, separators=(",", ":"))
+    ) == []
+    with factory() as session:
+        rows = list(session.scalars(select(Reading)))
+        state = session.scalar(select(TelemetrySyncState))
+    assert len(rows) == 1
+    assert state.duplicate_count == 1 and state.conflict_count == 0
+    assert acknowledgements[-1] == ("ARM2001-01", boot, 8)
+
+
+@pytest.mark.asyncio
 async def test_transaction_failure_sends_no_ack(settings):
     acknowledgements = []
 

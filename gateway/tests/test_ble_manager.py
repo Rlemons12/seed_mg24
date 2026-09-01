@@ -26,18 +26,19 @@ def test_reconnect_backoff_is_exponential_and_bounded():
 
 
 @pytest.mark.asyncio
-async def test_low_power_countdown_uses_last_telemetry_and_stays_overdue(settings):
+async def test_low_power_countdown_uses_only_current_low_power_evidence(settings):
     async def callback(*_args):
         pass
 
     manager = BleManager(settings, callback, callback)
     manager.schedule("MG24-0001", "AA")
-    manager.reporting_modes["MG24-0001"] = "LOW_POWER"
     recent = datetime.now(UTC) - timedelta(seconds=60)
-    runtime = manager.runtime("MG24-0001", recent)
+    manager._confirm_runtime_mode("MG24-0001", "LOW_POWER", recent)
+    runtime = manager.runtime("MG24-0001")
     assert 238 <= runtime["low_power_seconds_to_next_wake"] <= 240
     assert runtime["low_power_next_wake_at"] == recent + timedelta(seconds=300)
-    overdue = manager.runtime("MG24-0001", datetime.now(UTC) - timedelta(seconds=600))
+    manager._confirm_runtime_mode("MG24-0001", "LOW_POWER", datetime.now(UTC) - timedelta(seconds=600))
+    overdue = manager.runtime("MG24-0001")
     assert overdue["low_power_seconds_to_next_wake"] == 0
     await manager.shutdown()
 
@@ -236,6 +237,104 @@ async def test_duplicate_mode_evidence_is_idempotent(settings):
     second = manager.runtime("MG24-0001")
     assert first["actual_mode"] == second["actual_mode"] == "LOW_POWER"
     assert second["transition_state"] == "LOW_POWER_CONFIRMED"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_live_rearm_moves_deadline_but_duplicate_telemetry_does_not(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+    connection.send_command = callback
+    evidence = b'{"t":"tele","v":1,"rm":"live"}'
+    manager._observe_runtime_evidence("MG24-0001", evidence)
+    original_deadline = manager.runtime("MG24-0001")["live_mode_ends_at"]
+
+    await manager.command("MG24-0001", "MODE LIVE")
+    manager._observe_runtime_evidence("MG24-0001", evidence)
+    rearmed_deadline = manager.runtime("MG24-0001")["live_mode_ends_at"]
+    assert rearmed_deadline > original_deadline
+
+    manager._observe_runtime_evidence("MG24-0001", evidence)
+    assert manager.runtime("MG24-0001")["live_mode_ends_at"] == rearmed_deadline
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_remove_clears_live_next_wake_intent_before_reschedule(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    manager.schedule("MG24-0001", "AA")
+    await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
+    await manager.remove("MG24-0001")
+    runtime = manager.runtime("MG24-0001")
+    assert runtime["actual_mode"] == "UNKNOWN"
+    assert runtime["requested_mode"] is None
+    assert runtime["transition_state"] == "UNKNOWN"
+    assert runtime["live_on_next_wake"] is False
+
+    sent = []
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+
+    async def record(command):
+        sent.append(command)
+
+    connection.send_command = record
+    await connection.telemetry_callback("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
+    assert sent == []
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LOW_POWER"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_temporary_remove_preserves_live_next_wake_intent(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    manager.schedule("MG24-0001", "AA")
+    await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
+    await manager.remove("MG24-0001", preserve_runtime_intent=True)
+    assert manager.runtime("MG24-0001")["live_on_next_wake"] is True
+
+    sent = []
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+
+    async def record(command):
+        sent.append(command)
+
+    connection.send_command = record
+    await connection.telemetry_callback("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
+    assert sent == ["MODE LIVE"]
+    assert manager.runtime("MG24-0001")["transition_state"] == "LIVE_PENDING"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_delayed_low_power_replay_does_not_move_wake_deadline(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    manager.schedule("MG24-0001", "AA")
+    first_evidence = datetime.now(UTC) - timedelta(seconds=120)
+    manager._confirm_runtime_mode("MG24-0001", "LOW_POWER", first_evidence)
+    first_deadline = manager.runtime("MG24-0001")["low_power_next_wake_at"]
+
+    manager._observe_runtime_evidence(
+        "MG24-0001", b'{"t":"tele","v":1,"rm":"low_power","d":true}'
+    )
+    assert manager.runtime("MG24-0001")["low_power_next_wake_at"] == first_deadline
+
+    manager._observe_runtime_evidence("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
+    assert manager.runtime("MG24-0001")["low_power_next_wake_at"] > first_deadline
     await manager.shutdown()
 
 

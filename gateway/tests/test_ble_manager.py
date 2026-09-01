@@ -136,6 +136,32 @@ async def test_live_on_next_wake_is_deferred_until_telemetry(settings):
 
 
 @pytest.mark.asyncio
+async def test_live_on_next_wake_is_written_before_slow_telemetry_processing(settings):
+    events = []
+
+    async def telemetry(*_args):
+        events.append("persist")
+
+    async def status(*_args):
+        pass
+
+    manager = BleManager(settings, telemetry, status)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+
+    async def accept(command):
+        events.append(command)
+
+    connection.send_command = accept
+    manager.reporting_modes["MG24-0001"] = "LOW_POWER"
+    await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
+    await connection.telemetry_callback("MG24-0001", b"wake")
+    assert events == ["MODE LIVE", "persist"]
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_identify_uses_distinctive_pattern_and_finishes_off(settings, monkeypatch):
     async def callback(*_args):
         pass
@@ -173,6 +199,28 @@ async def test_stop_clears_pending_commands_safely():
     await connection.stop()
     assert connection._commands.empty()
     with pytest.raises(ConnectionError, match="pending command cancelled"):
+        await future
+
+
+@pytest.mark.asyncio
+async def test_closed_gatt_object_is_reported_as_a_connection_error():
+    async def callback(*_args):
+        pass
+
+    connection = DeviceConnection(
+        "MG24-0001", "AA", telemetry_callback=callback, status_callback=callback,
+        connection_semaphore=asyncio.Semaphore(1),
+    )
+    future = asyncio.get_running_loop().create_future()
+    connection._commands.put_nowait(("MODE LIVE", future))
+
+    class ClosedClient:
+        async def write_gatt_char(self, *_args, **_kwargs):
+            raise OSError("The object has been closed")
+
+    with pytest.raises(OSError, match="closed"):
+        await connection._drain_commands(ClosedClient())
+    with pytest.raises(ConnectionError, match="device connection closed"):
         await future
 
 

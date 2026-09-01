@@ -32,7 +32,7 @@ def list_nodes(request: Request, session: Session = Depends(get_session)) -> lis
             "protocol_version": node.protocol_version,
             "compatibility_status": node.compatibility_status,
             "compatibility_message": node.compatibility_message,
-            **request.app.state.ble_manager.runtime(node.device_id, node.last_seen_at),
+            **request.app.state.ble_manager.runtime(node.device_id),
         }
         for node in repository.list()
     ]
@@ -85,7 +85,7 @@ async def read_device_configuration(node_id: str, request: Request, session: Ses
     device = DeviceRepository(session).get(node_id)
     if device is None or not device.ble_address:
         raise HTTPException(status_code=404, detail="node or BLE address not found")
-    await request.app.state.ble_manager.remove(node_id)
+    await request.app.state.ble_manager.remove(node_id, preserve_runtime_intent=True)
     try:
         state = await request.app.state.node_provisioner.read_state(device.ble_address)
     finally:
@@ -122,7 +122,7 @@ async def configure_device(node_id: str, body: DeviceConfigurationRequest, reque
     if cached is not None:
         return cached
     configuration = body.model_dump(exclude={"transaction_id"}) | {"enabled": True}
-    await request.app.state.ble_manager.remove(node_id)
+    await request.app.state.ble_manager.remove(node_id, preserve_runtime_intent=True)
     try:
         result = await request.app.state.node_provisioner.configure(
             device.ble_address, node_id, body.transaction_id, configuration

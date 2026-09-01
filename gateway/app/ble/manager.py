@@ -40,7 +40,7 @@ class BleManager:
         self._pause_lock = asyncio.Lock()
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
-        self.reporting_modes.setdefault(device_id, "LOW_POWER")
+        self.reporting_modes.setdefault(device_id, "LIVE")
         if self.reporting_modes[device_id] == "LIVE" and device_id not in self._live_mode_tasks:
             self._schedule_live_mode_timeout(device_id)
         existing = self.connections.get(device_id)
@@ -220,7 +220,7 @@ class BleManager:
 
     def runtime(self, device_id: str, last_telemetry_at: datetime | None = None) -> dict:
         connection = self.connections.get(device_id)
-        mode = self.reporting_modes.get(device_id, "LOW_POWER" if connection else "UNKNOWN")
+        mode = self.reporting_modes.get(device_id, "LIVE" if connection else "UNKNOWN")
         next_wake_at = None
         seconds_to_next_wake = None
         if mode == "LOW_POWER":

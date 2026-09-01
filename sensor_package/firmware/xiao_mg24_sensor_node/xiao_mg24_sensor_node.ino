@@ -43,6 +43,7 @@
 #define EDGE_SUMMARY_INTERVAL_MS 60000UL
 #define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
 #define LOW_POWER_REPORT_INTERVAL_MS 300000UL
+#define LIVE_MODE_MAX_MS 600000UL
 #define LOW_POWER_SLEEP_SLICE_MS 1000UL
 #define PERSISTENT_SUMMARY_INTERVAL_MS 60000UL
 #define IMU_RETRY_INTERVAL_MS 30000UL
@@ -64,7 +65,8 @@ uint32_t telemetry_sequence = 0;
 char telemetry_boot_id[17] = "0000000000000000";
 uint32_t last_serial_telemetry_ms = 0;
 enum TelemetryMode : uint8_t { LIVE_MODE = 0, LOW_POWER_MODE = 1 };
-TelemetryMode reporting_mode = LOW_POWER_MODE;
+TelemetryMode reporting_mode = LIVE_MODE;
+uint32_t live_mode_started_ms = 0;
 uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_ms = 0;
 uint32_t last_low_power_report_ms = 0;
 uint32_t last_persistent_summary_ms = 0;
@@ -522,6 +524,7 @@ void handle_command(String command) {
   } else if (command == "MODE LIVE") {
     exit_low_power_mode();
     reporting_mode = LIVE_MODE;
+    live_mode_started_ms = millis();
     memset(&edge, 0, sizeof(edge));
     command_result(true, "mode_live");
   } else if (command == "MODE LOW_POWER") {
@@ -870,7 +873,7 @@ void setup() {
   update_led();
   Serial.println("{\"type\":\"hello\",\"board\":\"Seeed Studio XIAO MG24 Sense\",\"baud\":115200}");
   application_setup_complete = true;
-  enter_low_power_mode();
+  live_mode_started_ms = millis();
 }
 
 #if BLE_SUPPORTED
@@ -1295,6 +1298,10 @@ void loop() {
   update_microphone();
 
   const uint32_t now = millis();
+  if (reporting_mode == LIVE_MODE && elapsed_since(now, live_mode_started_ms, LIVE_MODE_MAX_MS)) {
+    reporting_mode = LOW_POWER_MODE;
+    enter_low_power_mode();
+  }
   if (reporting_mode == LIVE_MODE &&
       elapsed_since(now, last_sample_ms, microphone_runtime_config.report_interval_ms)) {
     last_sample_ms = now;

@@ -1,6 +1,6 @@
 # MG24 live and edge-summary telemetry
 
-The sensor has two reporting modes: `LIVE` and `LOW_POWER`. It starts in `LOW_POWER` after boot. An operator can use the Battery tab to select **Go Live**, **Go Live on Next Wake**, or **Use Low Power**. These controls send `MODE LIVE`, `MODE LIVE_NEXT_WAKE`, or `MODE LOW_POWER` through the same-origin-protected device-command path; they do not reset, provision, or change device identity.
+The sensor has two reporting modes: `LIVE` and `LOW_POWER`. It starts in a bounded ten-minute `LIVE` window after boot so BLE discovery and control remain reliable, then falls back to `LOW_POWER` locally even if no gateway is available. An operator can use the Battery tab to select **Go Live**, **Go Live on Next Wake**, or **Use Low Power**. These controls send `MODE LIVE`, `MODE LIVE_NEXT_WAKE`, or `MODE LOW_POWER` through the same-origin-protected device-command path; they do not reset, provision, or change device identity.
 
 The production firmware currently builds with `ENABLE_MIC=0`. The microphone driver, hardware object, initialization, and continuous sampling calls are excluded, and the node does not advertise a microphone capability. The legacy channel configuration remains as the persisted telemetry timing container; it does not activate microphone hardware.
 
@@ -12,7 +12,7 @@ The production firmware currently builds with `ENABLE_MIC=0`. The microphone dri
 
 `LOW_POWER` uses the Silicon Labs core's EM2-capable sleep path in one-second slices. The short slices allow BLE command and disconnect processing to remain responsive. The IMU rail and battery-divider rail are off between reports. Approximately every five minutes the firmware powers both rails, waits for stabilization, initializes the IMU, captures one battery/analog/IMU snapshot, publishes it, and powers the rails down again. Vibration FIFO processing and vibration summaries are paused, so this mode is for battery/runtime monitoring rather than continuous machine-condition monitoring.
 
-Low-power mode is runtime-only. A reboot starts in `LOW_POWER`; a BLE wake temporarily permits connection and an explicit LIVE transition. Identity, configuration, telemetry sequencing, buffered records, and lifecycle state remain intact.
+Low-power mode is runtime-only. A reboot opens a bounded LIVE control window before returning to `LOW_POWER`; a BLE wake permits a queued LIVE transition. Identity, configuration, telemetry sequencing, buffered records, and lifecycle state remain intact.
 
 The 60-second summary, five-minute heartbeat, and five-minute low-power snapshot values are initial power-policy heuristics, not validated battery specifications. Changing modes clears an incomplete accumulator so a summary never mixes samples taken under two modes.
 

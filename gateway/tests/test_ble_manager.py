@@ -32,6 +32,7 @@ async def test_low_power_countdown_uses_last_telemetry_and_stays_overdue(setting
 
     manager = BleManager(settings, callback, callback)
     manager.schedule("MG24-0001", "AA")
+    manager.reporting_modes["MG24-0001"] = "LOW_POWER"
     recent = datetime.now(UTC) - timedelta(seconds=60)
     runtime = manager.runtime("MG24-0001", recent)
     assert 238 <= runtime["low_power_seconds_to_next_wake"] <= 240
@@ -69,7 +70,7 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
         return None
 
     connection.send_command = accept
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
     await manager.command("MG24-0001", "MODE LIVE")
     assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
     await manager.command("MG24-0001", "MODE LOW_POWER")

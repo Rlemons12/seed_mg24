@@ -8,7 +8,7 @@ DASHBOARD = ROOT / "gateway/app/static/app.js"
 
 def test_firmware_exposes_only_live_and_low_power_modes():
     source = FIRMWARE.read_text(encoding="utf-8")
-    assert "TelemetryMode reporting_mode = LOW_POWER_MODE" in source
+    assert "TelemetryMode reporting_mode = LIVE_MODE" in source
     assert 'command == "MODE LIVE"' in source
     assert 'command == "MODE EDGE_SUMMARY"' not in source
     assert "capture_edge_sample()" in source

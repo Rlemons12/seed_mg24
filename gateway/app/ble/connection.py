@@ -294,7 +294,7 @@ class DeviceConnection:
                 raise
             except Exception as exc:
                 if not future.done():
-                    future.set_exception(exc)
+                    future.set_exception(ConnectionError("BLE command failed because the device connection closed"))
                 raise
         if self._pending_persistence_ack is not None or not self._commands.empty():
             self._command_ready.set()

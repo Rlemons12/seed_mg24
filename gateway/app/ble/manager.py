@@ -93,11 +93,23 @@ class BleManager:
         if connection:
             await connection.disconnect()
 
-    async def remove(self, device_id: str) -> None:
+    async def remove(self, device_id: str, *, preserve_runtime_intent: bool = False) -> None:
+        """Stop managing a connection; explicit stops clear runtime intent by default.
+
+        Exclusive configuration/provisioning callers may preserve intent while the
+        transport is paused. Actual mode still becomes unknown while disconnected.
+        """
         self._cancel_live_mode_timeout(device_id)
         connection = self.connections.pop(device_id, None)
         if connection:
             await connection.stop()
+        self.actual_modes[device_id] = "UNKNOWN"
+        if not preserve_runtime_intent:
+            self.live_on_next_wake.discard(device_id)
+            self.requested_modes.pop(device_id, None)
+            self.transition_acknowledged.pop(device_id, None)
+            self.transition_states[device_id] = "UNKNOWN"
+            self.low_power_started_at.pop(device_id, None)
 
     @asynccontextmanager
     async def paused_connections(self):
@@ -105,7 +117,7 @@ class BleManager:
         async with self._pause_lock:
             scheduled = [(device_id, connection.address) for device_id, connection in self.connections.items()]
             for device_id, _address in scheduled:
-                await self.remove(device_id)
+                await self.remove(device_id, preserve_runtime_intent=True)
             try:
                 yield
             finally:
@@ -180,6 +192,7 @@ class BleManager:
         previous_mode = self.actual_modes.get(device_id, "UNKNOWN")
         self.actual_modes[device_id] = mode
         requested = self.requested_modes.get(device_id)
+        explicit_mode_confirmation = requested == mode
         if requested == mode:
             self.requested_modes.pop(device_id, None)
             self.transition_states[device_id] = f"{mode}_CONFIRMED"
@@ -190,7 +203,7 @@ class BleManager:
         if mode == "LIVE":
             self.live_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
-            if previous_mode != "LIVE" or device_id not in self._live_mode_tasks:
+            if explicit_mode_confirmation or previous_mode != "LIVE" or device_id not in self._live_mode_tasks:
                 self._schedule_live_mode_timeout(device_id)
         else:
             self.low_power_started_at[device_id] = observed_at
@@ -246,17 +259,17 @@ class BleManager:
             return
         await connection.send_persistence_ack(boot_id, sequence)
 
-    def runtime(self, device_id: str, last_telemetry_at: datetime | None = None) -> dict:
+    def runtime(self, device_id: str) -> dict:
         connection = self.connections.get(device_id)
         mode = self.actual_modes.get(device_id, "UNKNOWN")
         next_wake_at = None
         seconds_to_next_wake = None
         if mode == "LOW_POWER":
             now = datetime.now(UTC)
-            anchors = [self.low_power_started_at.get(device_id), last_telemetry_at]
-            anchors = [item.replace(tzinfo=UTC) if item and item.tzinfo is None else item for item in anchors if item]
-            if anchors:
-                anchor = max(anchors)
+            anchor = self.low_power_started_at.get(device_id)
+            if anchor:
+                if anchor.tzinfo is None:
+                    anchor = anchor.replace(tzinfo=UTC)
                 next_wake_at = anchor + timedelta(seconds=LOW_POWER_WAKE_INTERVAL_SECONDS)
                 seconds_to_next_wake = max(0, math.ceil((next_wake_at - now).total_seconds()))
         low_power = {

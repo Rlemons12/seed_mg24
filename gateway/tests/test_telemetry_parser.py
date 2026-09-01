@@ -92,6 +92,24 @@ def test_parses_ack_capable_v2_identity_and_sample_count():
     assert result.sequence_number == 9 and result.sample_count == 5
 
 
+@pytest.mark.parametrize("wire,expected", [("live", "LIVE"), ("low_power", "LOW_POWER")])
+def test_runtime_mode_is_strictly_normalized(wire, expected):
+    result = parse_telemetry(json.dumps({**COMPACT, "rm": wire}))
+    assert result.runtime_mode == expected
+
+
+@pytest.mark.parametrize("value", ["LIVE", "sleep", "", 1, True])
+def test_invalid_runtime_mode_is_rejected(value):
+    with pytest.raises(TelemetryParseError, match="rm"):
+        parse_telemetry(json.dumps({**COMPACT, "rm": value}))
+
+
+def test_mode_ack_preserves_code_and_actual_mode_evidence():
+    result = parse_telemetry('{"t":"ca","v":1,"s":1,"ms":2,"rm":"live","code":"mode_live"}')
+    assert result.record_type == "config_ack"
+    assert result.runtime_mode == "LIVE" and result.metadata["code"] == "mode_live"
+
+
 def test_parses_persistent_journal_replay_as_delayed_with_bounded_age():
     result = parse_telemetry(
         '{"t":"tele","v":2,"id":"MG24-1","bid":"0123456789abcdef","s":9,"ms":1000,'

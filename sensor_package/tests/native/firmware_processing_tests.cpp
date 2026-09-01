@@ -55,6 +55,7 @@ int main() {
   assert(buffer.push(alarm_record)); assert(buffer.dropped_count()==1);
   TelemetryRecord peeked; assert(buffer.peek_oldest(&peeked)); assert(buffer.size()==TELEMETRY_BUFFER_CAPACITY);
   assert(buffer.oldest_sequence()==peeked.sequence_number && buffer.newest_sequence()==99);
+  buffer.mark_all_delayed(); assert(buffer.peek_oldest(&peeked) && peeked.delayed);
   assert(buffer.acknowledge_through(5)>0 && buffer.size()<TELEMETRY_BUFFER_CAPACITY);
   bool found=false; TelemetryRecord out; while(buffer.pop(&out)) if(out.sequence_number==99) found=true;
   assert(found && out.delayed);

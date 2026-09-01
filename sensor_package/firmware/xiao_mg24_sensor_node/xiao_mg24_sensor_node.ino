@@ -217,8 +217,10 @@ static bool next_command_token(const String& command, int* offset, String* token
 
 void command_result(bool accepted, const char* code) {
   char response[120];
-  snprintf(response, sizeof(response), "{\"t\":\"%s\",\"v\":1,\"id\":\"%s\",\"s\":%lu,\"ms\":%lu,\"code\":\"%s\"}",
-           accepted ? "ca" : "ce", runtime_node_id(), (unsigned long)telemetry_sequence++, (unsigned long)millis(), code);
+  const char* actual_mode = reporting_mode == LIVE_MODE ? "live" : "low_power";
+  snprintf(response, sizeof(response), "{\"t\":\"%s\",\"v\":1,\"id\":\"%s\",\"s\":%lu,\"ms\":%lu,\"rm\":\"%s\",\"code\":\"%s\"}",
+           accepted ? "ca" : "ce", runtime_node_id(), (unsigned long)telemetry_sequence++,
+           (unsigned long)millis(), actual_mode, code);
   Serial.println(response);
 #if BLE_SUPPORTED
   if (ble_connected) ble_send_payload(response);
@@ -522,12 +524,14 @@ void handle_command(String command) {
       microphone_runtime_config.report_interval_ms = value;
     } else command_result(false, "invalid_rate");
   } else if (command == "MODE LIVE") {
+    offline_buffer.mark_all_delayed();
     exit_low_power_mode();
     reporting_mode = LIVE_MODE;
     live_mode_started_ms = millis();
     memset(&edge, 0, sizeof(edge));
     command_result(true, "mode_live");
   } else if (command == "MODE LOW_POWER") {
+    offline_buffer.mark_all_delayed();
     reporting_mode = LOW_POWER_MODE;
     enter_low_power_mode();
     command_result(true, "mode_low_power");
@@ -688,8 +692,16 @@ float battery_voltage() {
     return 0.0f;
   }
 
-  int raw = analogRead(BATTERY_ADC_PIN);
-  return raw * (2.0f * 3.3f / 4095.0f);
+  constexpr uint8_t kBatteryAdcSampleCount = 8;
+  (void)analogRead(BATTERY_ADC_PIN);  // Discard the first conversion after enabling the divider.
+  delay(1);
+  uint32_t total = 0;
+  for (uint8_t sample = 0; sample < kBatteryAdcSampleCount; ++sample) {
+    total += (uint32_t)analogRead(BATTERY_ADC_PIN);
+    delay(1);
+  }
+  const float average = static_cast<float>(total) / static_cast<float>(kBatteryAdcSampleCount);
+  return average * (2.0f * 3.3f / 4095.0f);
 }
 
 void print_telemetry() {
@@ -894,6 +906,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt) {
       ble_connected = false;
       ble_notify_enabled = false;
       ble_vibration_notify_enabled = false;
+      // Any unacknowledged runtime-mode field is historical after reconnect.
+      offline_buffer.mark_all_delayed();
       if (ble_database_initialized) ble_start_advertising();
       break;
     case sl_bt_evt_gatt_server_characteristic_status_id:
@@ -1103,10 +1117,11 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
 
   const uint32_t record_sequence = telemetry_sequence++;
   const uint32_t record_uptime = millis();
+  const char* actual_mode = reporting_mode == LIVE_MODE ? "live" : "low_power";
   int written = snprintf(ble_json, sizeof(ble_json),
-           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,\"io\":%d,"
+           "{\"t\":\"tele\",\"v\":2,\"id\":\"%s\",\"bid\":\"%s\",\"s\":%lu,\"ms\":%lu,\"rm\":\"%s\",\"sc\":%lu,\"m\":%lu,\"mp\":%d,\"bv\":%.3f,\"l\":%d,\"io\":%d,"
            "\"a\":[%.3f,%.3f,%.3f],\"g\":[%.2f,%.2f,%.2f],\"n\":[%s]}",
-           runtime_node_id(), telemetry_boot_id, (unsigned long)record_sequence, (unsigned long)record_uptime,
+           runtime_node_id(), telemetry_boot_id, (unsigned long)record_sequence, (unsigned long)record_uptime, actual_mode,
            (unsigned long)max(1UL, sample_count), (unsigned long)mic_raw, mic_pct, batt, led_brightness, imu_ok ? 1 : 0,
            ax, ay, az, gx, gy, gz, analog_json);
   if (written <= 0 || (size_t)written >= sizeof(ble_json)) {
@@ -1119,6 +1134,7 @@ void ble_update_telemetry(float batt, float ax, float ay, float az, float gx, fl
   TelemetryRecord record = {};
   record.type = RecordType::Measurement; record.priority = RecordPriority::Routine;
   record.sequence_number = record_sequence; record.uptime_ms = record_uptime;
+  record.delayed = !ble_connected;
   strlcpy(record.payload, current_telemetry, sizeof(record.payload));
   offline_buffer.push(record);
   if (!ble_connected && elapsed_since(record_uptime, last_persistent_summary_ms, PERSISTENT_SUMMARY_INTERVAL_MS)) {
@@ -1157,7 +1173,13 @@ bool ble_send_oldest_buffered() {
     return ble_send_payload(persistent_journal_json);
   }
   TelemetryRecord record = {};
-  return offline_buffer.peek_oldest(&record) && ble_send_payload(record.payload);
+  if (!offline_buffer.peek_oldest(&record)) return false;
+  if (!record.delayed) return ble_send_payload(record.payload);
+  const size_t payload_length = strlen(record.payload);
+  if (payload_length < 2 || record.payload[payload_length - 1] != '}') return false;
+  const int written = snprintf(ble_json, sizeof(ble_json), "%.*s,\"d\":1}",
+                               (int)(payload_length - 1), record.payload);
+  return written > 0 && (size_t)written < sizeof(ble_json) && ble_send_payload(ble_json);
 }
 
 void generate_telemetry_boot_id() {
@@ -1319,10 +1341,12 @@ void loop() {
     last_heartbeat_ms = now;
     if (encode_heartbeat(telemetry_sequence++, now, battery_voltage(), offline_buffer.size(),
                          offline_buffer.dropped_count(), processing_error_count, sensor_error_count,
-                         runtime_node_id(), telemetry_boot_id, ble_json, sizeof(ble_json))) {
+                         runtime_node_id(), telemetry_boot_id,
+                         reporting_mode == LIVE_MODE ? "live" : "low_power", ble_json, sizeof(ble_json))) {
       TelemetryRecord heartbeat = {};
       heartbeat.type = RecordType::Heartbeat; heartbeat.priority = RecordPriority::Heartbeat;
       heartbeat.sequence_number = telemetry_sequence - 1; heartbeat.uptime_ms = now;
+      heartbeat.delayed = !ble_connected;
       strlcpy(heartbeat.payload, ble_json, sizeof(heartbeat.payload));
       offline_buffer.push(heartbeat);
       ble_send_oldest_buffered();
@@ -1331,5 +1355,9 @@ void loop() {
     }
   }
 #endif
+  // A MODE LIVE write can arrive while the low-power snapshot notification is
+  // completing. The BLE event retains it in ble_command_pending; this bounded
+  // slice returns to the command drain above within one second, where
+  // exit_low_power_mode() restores both rails and reinitializes the IMU.
   if (reporting_mode == LOW_POWER_MODE) LowPower.sleep(LOW_POWER_SLEEP_SLICE_MS);
 }

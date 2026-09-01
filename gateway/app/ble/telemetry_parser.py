@@ -36,6 +36,15 @@ def _boot_id(payload: dict[str, Any], schema: int) -> str | None:
     return value
 
 
+def _runtime_mode(payload: dict[str, Any]) -> str | None:
+    value = payload.get("rm")
+    if value is None:
+        return None
+    if value not in {"live", "low_power"}:
+        raise TelemetryParseError("rm must be live or low_power")
+    return value.upper()
+
+
 def _array(value: Any, field: str, exact: int | None = None, maximum: int = 16) -> list[float | int]:
     if not isinstance(value, list) or len(value) > maximum or exact is not None and len(value) != exact:
         raise TelemetryParseError(f"{field} has an invalid length")
@@ -172,6 +181,7 @@ def _parse_legacy(payload: dict[str, Any], received_at: datetime) -> NormalizedT
         sample_count=sample_count,
         received_at=received_at,
         delayed=bool(work.get("d", False)),
+        runtime_mode=_runtime_mode(work),
         metadata={
             "persistent_journal": True,
             **({"journal_age_ms": _uint32(work["jm"], "jm")} if "jm" in work else {}),
@@ -220,7 +230,9 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
     event = payload.get("e")
     if event is not None and (not isinstance(event, str) or len(event) > 96):
         raise TelemetryParseError("event is invalid")
-    metadata = {key: payload[key] for key in ("fw", "sh", "bu", "dr", "pe", "se", "mi", "fi", "fc", "crc") if key in payload}
+    metadata = {key: payload[key] for key in ("fw", "sh", "bu", "dr", "pe", "se", "mi", "fi", "fc", "crc", "code") if key in payload}
+    if "code" in metadata and (not isinstance(metadata["code"], str) or not metadata["code"] or len(metadata["code"]) > 96):
+        raise TelemetryParseError("code is invalid")
     if kind == "h" and "bv" in payload:
         battery = _finite_number(payload["bv"], "bv")
         channels["battery_voltage"] = ChannelValue(value=battery, unit="V", quality="good", value_kind="calibrated")
@@ -243,6 +255,7 @@ def _parse_versioned(payload: dict[str, Any], received_at: datetime) -> Normaliz
         sensor_boot_id=_boot_id(payload, version),
         received_at=received_at,
         delayed=bool(payload.get("d", False)),
+        runtime_mode=_runtime_mode(payload),
         event=event,
         channels=channels,
         metadata=metadata,

@@ -58,7 +58,7 @@ async def test_multiple_devices_have_independent_state(settings):
 
 
 @pytest.mark.asyncio
-async def test_reporting_mode_tracks_successful_mode_commands(settings):
+async def test_mode_write_stays_pending_until_ack_and_telemetry_confirmation(settings):
     async def callback(*_args):
         pass
 
@@ -70,17 +70,28 @@ async def test_reporting_mode_tracks_successful_mode_commands(settings):
         return None
 
     connection.send_command = accept
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["actual_mode"] == "UNKNOWN"
     await manager.command("MG24-0001", "MODE LIVE")
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    runtime = manager.runtime("MG24-0001")
+    assert runtime["actual_mode"] == "UNKNOWN" and runtime["transition_state"] == "LIVE_PENDING"
+    manager._observe_runtime_evidence(
+        "MG24-0001", b'{"t":"ca","v":1,"s":1,"ms":2,"rm":"live","code":"mode_live"}'
+    )
+    runtime = manager.runtime("MG24-0001")
+    assert runtime["actual_mode"] == "UNKNOWN" and runtime["transition_acknowledged"] is True
+    manager._observe_runtime_evidence("MG24-0001", b'{"t":"tele","v":1,"rm":"live"}')
+    assert manager.runtime("MG24-0001")["transition_state"] == "LIVE_CONFIRMED"
     await manager.command("MG24-0001", "MODE LOW_POWER")
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["transition_state"] == "LOW_POWER_PENDING"
+    manager._observe_runtime_evidence("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LOW_POWER"
     assert 1 <= manager.runtime("MG24-0001")["low_power_seconds_to_next_wake"] <= 300
     await manager.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_live_mode_automatically_returns_to_low_power(settings, monkeypatch):
+async def test_live_timeout_waits_for_firmware_low_power_evidence(settings, monkeypatch):
     async def callback(*_args):
         pass
 
@@ -99,8 +110,9 @@ async def test_live_mode_automatically_returns_to_low_power(settings, monkeypatc
     monkeypatch.setattr("gateway.app.ble.manager.asyncio.sleep", no_delay)
     manager.reporting_modes["MG24-0001"] = "LIVE"
     await manager._expire_live_mode("MG24-0001")
-    assert sent == ["MODE LOW_POWER"]
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
+    assert sent == []
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["transition_state"] == "LOW_POWER_PENDING"
     assert manager.runtime("MG24-0001")["live_mode_ends_at"] is None
     await manager.shutdown()
 
@@ -128,10 +140,18 @@ async def test_live_on_next_wake_is_deferred_until_telemetry(settings):
     await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
     assert sent == []
     assert manager.runtime("MG24-0001")["live_on_next_wake"] is True
-    await connection.telemetry_callback("MG24-0001", b"wake")
-    assert received == [("MG24-0001", b"wake")]
+    replay = b'{"t":"tele","v":1,"rm":"low_power","d":true}'
+    await connection.telemetry_callback("MG24-0001", replay)
+    assert sent == []
+    wake = b'{"t":"tele","v":1,"rm":"low_power"}'
+    await connection.telemetry_callback("MG24-0001", wake)
+    assert received == [("MG24-0001", replay), ("MG24-0001", wake)]
     assert sent == ["MODE LIVE"]
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LOW_POWER"
+    assert manager.runtime("MG24-0001")["transition_state"] == "LIVE_PENDING"
+    assert manager.runtime("MG24-0001")["live_on_next_wake"] is True
+    await connection.telemetry_callback("MG24-0001", b'{"t":"tele","v":1,"rm":"live"}')
+    assert manager.runtime("MG24-0001")["actual_mode"] == "LIVE"
     assert manager.runtime("MG24-0001")["live_on_next_wake"] is False
     await manager.shutdown()
 
@@ -156,9 +176,66 @@ async def test_live_on_next_wake_is_written_before_slow_telemetry_processing(set
     connection.send_command = accept
     manager.reporting_modes["MG24-0001"] = "LOW_POWER"
     await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
-    await connection.telemetry_callback("MG24-0001", b"wake")
+    await connection.telemetry_callback("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
     assert events == ["MODE LIVE", "persist"]
-    assert manager.runtime("MG24-0001")["reporting_mode"] == "LIVE"
+    assert manager.runtime("MG24-0001")["reporting_mode"] == "LOW_POWER"
+    assert manager.runtime("MG24-0001")["transition_state"] == "LIVE_PENDING"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_live_next_wake_send_retains_request(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+
+    async def fail(_command):
+        raise ConnectionError("closed")
+
+    connection.send_command = fail
+    await manager.command("MG24-0001", "MODE LIVE_NEXT_WAKE")
+    await connection.telemetry_callback("MG24-0001", b'{"t":"tele","v":1,"rm":"low_power"}')
+    runtime = manager.runtime("MG24-0001")
+    assert runtime["live_on_next_wake"] is True
+    assert runtime["transition_state"] == "LIVE_REQUESTED"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_during_live_pending_sets_actual_unknown(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    connection = manager.schedule("MG24-0001", "AA")
+    connection.state = "connected"
+    connection.send_command = callback
+    manager._confirm_runtime_mode("MG24-0001", "LOW_POWER", datetime.now(UTC))
+    await manager.command("MG24-0001", "MODE LIVE")
+    await connection.status_callback("backoff", "ConnectionError")
+    runtime = manager.runtime("MG24-0001")
+    assert runtime["actual_mode"] == "UNKNOWN"
+    assert runtime["transition_state"] == "LIVE_PENDING"
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_mode_evidence_is_idempotent(settings):
+    async def callback(*_args):
+        pass
+
+    manager = BleManager(settings, callback, callback)
+    manager.schedule("MG24-0001", "AA")
+    evidence = b'{"t":"tele","v":1,"rm":"low_power"}'
+    manager._observe_runtime_evidence("MG24-0001", evidence)
+    first = manager.runtime("MG24-0001")
+    manager._observe_runtime_evidence("MG24-0001", evidence)
+    second = manager.runtime("MG24-0001")
+    assert first["actual_mode"] == second["actual_mode"] == "LOW_POWER"
+    assert second["transition_state"] == "LOW_POWER_CONFIRMED"
     await manager.shutdown()
 
 

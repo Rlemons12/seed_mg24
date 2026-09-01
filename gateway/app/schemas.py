@@ -86,6 +86,13 @@ class DeviceResponse(BaseModel):
     factory_reset_status: str
     last_error: str | None = None
     reporting_mode: Literal["LIVE", "LOW_POWER", "UNKNOWN"] = "UNKNOWN"
+    requested_mode: Literal["LIVE", "LOW_POWER"] | None = None
+    actual_mode: Literal["LIVE", "LOW_POWER", "UNKNOWN"] = "UNKNOWN"
+    transition_state: Literal[
+        "UNKNOWN", "LIVE_REQUESTED", "LIVE_PENDING", "LIVE_CONFIRMED", "LIVE_FAILED",
+        "LOW_POWER_REQUESTED", "LOW_POWER_PENDING", "LOW_POWER_CONFIRMED", "LOW_POWER_FAILED",
+    ] = "UNKNOWN"
+    transition_acknowledged: bool = False
     low_power_wake_interval_seconds: int = 300
     low_power_next_wake_at: datetime | None = None
     low_power_seconds_to_next_wake: int | None = None
@@ -167,6 +174,7 @@ class NormalizedTelemetry(BaseModel):
     sample_count: int | None = Field(default=None, ge=1, le=0xFFFFFFFF)
     received_at: datetime
     delayed: bool = False
+    runtime_mode: Literal["LIVE", "LOW_POWER"] | None = None
     event: str | None = Field(default=None, max_length=96)
     channels: dict[str, ChannelValue] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

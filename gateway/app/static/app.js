@@ -7,6 +7,15 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
 function notice(message = "") { $("notice").textContent = message; }
 function time(value) { return value ? new Date(value).toLocaleString() : "Never"; }
+function runtimeModeText(node) {
+  const transition = node.transition_state || "UNKNOWN";
+  if (transition === "LIVE_REQUESTED") return "Telemetry mode: WAITING FOR NEXT WAKE";
+  if (transition === "LOW_POWER_REQUESTED") return "Telemetry mode: LOW POWER REQUESTED";
+  if (transition === "LIVE_PENDING") return `Telemetry mode: SWITCHING TO LIVE${node.transition_acknowledged ? " (accepted)" : ""}`;
+  if (transition === "LOW_POWER_PENDING") return `Telemetry mode: SWITCHING TO LOW POWER${node.transition_acknowledged ? " (accepted)" : ""}`;
+  if (transition.endsWith("_FAILED")) return `Telemetry mode: ${transition.replaceAll("_", " ")}`;
+  return `Telemetry mode: ${(node.actual_mode || node.reporting_mode || "UNKNOWN").replaceAll("_", " ")}`;
+}
 function updateBatteryWakeCountdowns() {
   document.querySelectorAll(".battery-wake-status").forEach((item) => {
     if (item.dataset.pending === "true") { item.textContent = "Go Live is queued for the next sensor wake."; return; }
@@ -119,10 +128,12 @@ function refreshLive() {
       if (battery) battery.textContent = batterySummary(node.node_id);
       const wakeStatus = card.querySelector(".battery-wake-status");
       if (wakeStatus) {
-        wakeStatus.dataset.lowPower = String(node.reporting_mode === "LOW_POWER");
+        wakeStatus.dataset.lowPower = String((node.actual_mode || node.reporting_mode) === "LOW_POWER");
         wakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at || "";
         wakeStatus.dataset.pending = String(Boolean(node.live_on_next_wake));
       }
+      const modeStatus = card.querySelector(".battery-mode-status");
+      if (modeStatus) modeStatus.textContent = runtimeModeText(node);
       card.querySelectorAll(".live-input-grid").forEach((inputGrid) => {
         const rows = inputGrid.classList.contains("live-input-grid--compact")
           ? (state.readings[node.node_id] || []).filter((row) => ["acceleration_x", "acceleration_y", "acceleration_z", "angular_velocity_x", "angular_velocity_y", "angular_velocity_z"].includes(row.channel))
@@ -283,23 +294,23 @@ function renderNodes() {
     const battery = sensorPanel(node.node_id, "battery", activeTab === "battery");
     const batteryMonitoring = el("div", undefined, "battery-monitoring");
     batteryMonitoring.append(el("p", "Open this tab to load battery runtime history.", "muted")); battery.append(batteryMonitoring);
-    const batteryModeStatus = el("p", `Telemetry mode: ${(node.reporting_mode || "UNKNOWN").replaceAll("_", " ")}`, "state battery-mode-status");
+    const batteryModeStatus = el("p", runtimeModeText(node), "state battery-mode-status");
     battery.append(batteryModeStatus);
     const batteryWakeStatus = el("p", "", "muted battery-wake-status");
-    batteryWakeStatus.dataset.lowPower = String(node.reporting_mode === "LOW_POWER");
+    batteryWakeStatus.dataset.lowPower = String((node.actual_mode || node.reporting_mode) === "LOW_POWER");
     batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at || "";
     batteryWakeStatus.dataset.pending = String(Boolean(node.live_on_next_wake));
     battery.append(batteryWakeStatus); updateBatteryWakeCountdowns();
     const batteryModeActions = el("div", undefined, "actions");
     const liveMode = el("button", "Go Live");
     liveMode.type = "button";
-    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.reporting_mode = "LIVE"; batteryModeStatus.textContent = "Telemetry mode: LIVE (temporary)"; batteryWakeStatus.dataset.lowPower = "false"; batteryWakeStatus.dataset.nextWakeAt = ""; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is sending live telemetry temporarily and will return to Low Power automatically.`); } catch(error) { notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
+    liveMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE"})}); node.requested_mode = "LIVE"; node.transition_state = "LIVE_PENDING"; node.transition_acknowledged = false; batteryModeStatus.textContent = runtimeModeText(node); notice(`${node.display_name} request was written; waiting for sensor telemetry to confirm Live.`); } catch(error) { node.transition_state = "LIVE_FAILED"; batteryModeStatus.textContent = runtimeModeText(node); notice(`${error.message}. If the sensor is sleeping, use Go Live on Next Wake.`); } });
     const liveNextWake = el("button", "Go Live on Next Wake");
     liveNextWake.type = "button";
-    liveNextWake.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE_NEXT_WAKE"})}); node.live_on_next_wake = true; batteryWakeStatus.dataset.pending = "true"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will switch to live telemetry when its next wake is observed.`); } catch(error) { notice(error.message); } });
+    liveNextWake.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LIVE_NEXT_WAKE"})}); node.live_on_next_wake = true; node.requested_mode = "LIVE"; node.transition_state = "LIVE_REQUESTED"; batteryModeStatus.textContent = runtimeModeText(node); batteryWakeStatus.dataset.pending = "true"; updateBatteryWakeCountdowns(); notice(`${node.display_name} is waiting for its next wake before switching to Live.`); } catch(error) { notice(error.message); } });
     const lowPowerMode = el("button", "Use Low Power");
     lowPowerMode.type = "button";
-    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.reporting_mode = "LOW_POWER"; node.low_power_next_wake_at = new Date(Date.now() + 300000).toISOString(); batteryModeStatus.textContent = "Telemetry mode: LOW POWER"; batteryWakeStatus.dataset.lowPower = "true"; batteryWakeStatus.dataset.nextWakeAt = node.low_power_next_wake_at; batteryWakeStatus.dataset.pending = "false"; updateBatteryWakeCountdowns(); notice(`${node.display_name} will wake approximately every five minutes; vibration windows are paused.`); } catch(error) { notice(error.message); } });
+    lowPowerMode.addEventListener("click", async () => { try { await api(`/api/devices/${encodeURIComponent(node.node_id)}/commands`, {method:"POST", body:JSON.stringify({command:"MODE LOW_POWER"})}); node.requested_mode = "LOW_POWER"; node.transition_state = "LOW_POWER_PENDING"; node.transition_acknowledged = false; batteryModeStatus.textContent = runtimeModeText(node); notice(`${node.display_name} request was written; waiting for sensor telemetry to confirm Low Power.`); } catch(error) { node.transition_state = "LOW_POWER_FAILED"; batteryModeStatus.textContent = runtimeModeText(node); notice(error.message); } });
     batteryModeActions.append(liveMode, liveNextWake, lowPowerMode); battery.append(batteryModeActions);
     battery._panelLoad = () => MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api);
     if (expanded && activeTab === "battery") battery._panelLoad().catch((error) => batteryMonitoring.replaceChildren(el("p", error.message, "warning")));

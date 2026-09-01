@@ -6,7 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
 from gateway.app.ble.connection import DeviceConnection
+from gateway.app.ble.telemetry_parser import TelemetryParseError, parse_telemetry
 from gateway.app.config import Settings
+from gateway.app.schemas import NormalizedTelemetry
 
 LED_COMMAND = re.compile(r"LED (?:ON|OFF|(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5]))$")
 RATE_COMMAND = re.compile(r"RATE (?:[5-9][0-9]|[1-9][0-9]{2}|[1-4][0-9]{3}|5000)$")
@@ -28,10 +30,14 @@ class BleManager:
         self.status_callback = status_callback
         self.client_factory = client_factory
         self.connections: dict[str, DeviceConnection] = {}
-        self.reporting_modes: dict[str, str] = {}
+        self.actual_modes: dict[str, str] = {}
+        # Compatibility alias for internal callers/tests; values are sensor-confirmed only.
+        self.reporting_modes = self.actual_modes
+        self.requested_modes: dict[str, str] = {}
+        self.transition_states: dict[str, str] = {}
+        self.transition_acknowledged: dict[str, bool] = {}
         self.low_power_started_at: dict[str, datetime] = {}
         self.live_on_next_wake: set[str] = set()
-        self.low_power_on_next_wake: set[str] = set()
         self.live_mode_ends_at: dict[str, datetime] = {}
         self._live_mode_tasks: dict[str, asyncio.Task] = {}
         self._pending_live_locks: dict[str, asyncio.Lock] = {}
@@ -40,9 +46,8 @@ class BleManager:
         self._pause_lock = asyncio.Lock()
 
     def schedule(self, device_id: str, address: str) -> DeviceConnection:
-        self.reporting_modes.setdefault(device_id, "LIVE")
-        if self.reporting_modes[device_id] == "LIVE" and device_id not in self._live_mode_tasks:
-            self._schedule_live_mode_timeout(device_id)
+        self.actual_modes.setdefault(device_id, "UNKNOWN")
+        self.transition_states.setdefault(device_id, "UNKNOWN")
         existing = self.connections.get(device_id)
         if existing is not None:
             if existing.address != address:
@@ -51,15 +56,20 @@ class BleManager:
             return existing
 
         async def status(state: str, error: str | None) -> None:
+            if state != "connected":
+                self.actual_modes[device_id] = "UNKNOWN"
             await self.status_callback(device_id, state, error)
 
         async def telemetry(data_device_id: str, data: bytes) -> None:
-            if self.reporting_modes.get(data_device_id) == "LOW_POWER":
-                self.low_power_started_at[data_device_id] = datetime.now(UTC)
-            if data_device_id in self.live_on_next_wake:
+            evidence = self._observe_runtime_evidence(data_device_id, data)
+            is_current_low_power_wake = (
+                evidence is not None
+                and evidence.runtime_mode == "LOW_POWER"
+                and evidence.record_type in {"measurement", "heartbeat"}
+                and not evidence.delayed
+            )
+            if data_device_id in self.live_on_next_wake and is_current_low_power_wake:
                 await self._apply_live_on_next_wake(data_device_id)
-            if data_device_id in self.low_power_on_next_wake:
-                await self._apply_low_power_on_next_wake(data_device_id)
             await self.telemetry_callback(data_device_id, data)
 
         connection = DeviceConnection(
@@ -85,7 +95,6 @@ class BleManager:
 
     async def remove(self, device_id: str) -> None:
         self._cancel_live_mode_timeout(device_id)
-        self.low_power_on_next_wake.discard(device_id)
         connection = self.connections.pop(device_id, None)
         if connection:
             await connection.stop()
@@ -109,23 +118,26 @@ class BleManager:
             if device_id not in self.connections:
                 raise ConnectionError("device is not managed")
             self.live_on_next_wake.add(device_id)
+            self.requested_modes[device_id] = "LIVE"
+            self.transition_states[device_id] = "LIVE_REQUESTED"
+            self.transition_acknowledged[device_id] = False
             return normalized
         connection = self.connections.get(device_id)
         if connection is None:
             raise ConnectionError("device is not managed")
-        await connection.send_command(normalized)
-        if normalized == "MODE LIVE":
-            self.reporting_modes[device_id] = "LIVE"
-            self.live_on_next_wake.discard(device_id)
-            self.low_power_on_next_wake.discard(device_id)
-            self.low_power_started_at.pop(device_id, None)
-            self._schedule_live_mode_timeout(device_id)
-        elif normalized == "MODE LOW_POWER":
-            self.reporting_modes[device_id] = "LOW_POWER"
-            self.live_on_next_wake.discard(device_id)
-            self.low_power_on_next_wake.discard(device_id)
-            self.low_power_started_at[device_id] = datetime.now(UTC)
-            self._cancel_live_mode_timeout(device_id)
+        target = "LIVE" if normalized == "MODE LIVE" else "LOW_POWER" if normalized == "MODE LOW_POWER" else None
+        if target:
+            self.requested_modes[device_id] = target
+            self.transition_states[device_id] = f"{target}_REQUESTED"
+            self.transition_acknowledged[device_id] = False
+        try:
+            await connection.send_command(normalized)
+        except (ConnectionError, TimeoutError):
+            if target:
+                self.transition_states[device_id] = f"{target}_FAILED"
+            raise
+        if target:
+            self.transition_states[device_id] = f"{target}_PENDING"
         return normalized
 
     async def _apply_live_on_next_wake(self, device_id: str) -> None:
@@ -142,10 +154,47 @@ class BleManager:
                 await connection.send_command("MODE LIVE")
             except (ConnectionError, TimeoutError):
                 return
-            self.reporting_modes[device_id] = "LIVE"
+            self.requested_modes[device_id] = "LIVE"
+            self.transition_states[device_id] = "LIVE_PENDING"
+            self.transition_acknowledged[device_id] = False
+
+    def _observe_runtime_evidence(self, device_id: str, data: bytes) -> NormalizedTelemetry | None:
+        try:
+            payload = parse_telemetry(data, max_payload_bytes=self.settings.max_payload_bytes)
+        except TelemetryParseError:
+            return None
+        code = payload.metadata.get("code")
+        if payload.record_type == "config_ack" and code in {"mode_live", "mode_low_power"}:
+            target = "LIVE" if code == "mode_live" else "LOW_POWER"
+            if self.requested_modes.get(device_id) == target:
+                self.transition_states[device_id] = f"{target}_PENDING"
+                self.transition_acknowledged[device_id] = True
+        # Command acknowledgements prove execution/acceptance. Current measurement or
+        # heartbeat telemetry is the stronger sustained-state evidence; replayed rows
+        # deliberately omit rm and therefore cannot overwrite current physical state.
+        if payload.runtime_mode and payload.record_type in {"measurement", "heartbeat"} and not payload.delayed:
+            self._confirm_runtime_mode(device_id, payload.runtime_mode, payload.received_at)
+        return payload
+
+    def _confirm_runtime_mode(self, device_id: str, mode: str, observed_at: datetime) -> None:
+        previous_mode = self.actual_modes.get(device_id, "UNKNOWN")
+        self.actual_modes[device_id] = mode
+        requested = self.requested_modes.get(device_id)
+        if requested == mode:
+            self.requested_modes.pop(device_id, None)
+            self.transition_states[device_id] = f"{mode}_CONFIRMED"
+            self.transition_acknowledged.pop(device_id, None)
+        elif requested is None:
+            self.transition_states[device_id] = f"{mode}_CONFIRMED"
+            self.transition_acknowledged.pop(device_id, None)
+        if mode == "LIVE":
             self.live_on_next_wake.discard(device_id)
             self.low_power_started_at.pop(device_id, None)
-            self._schedule_live_mode_timeout(device_id)
+            if previous_mode != "LIVE" or device_id not in self._live_mode_tasks:
+                self._schedule_live_mode_timeout(device_id)
+        else:
+            self.low_power_started_at[device_id] = observed_at
+            self._cancel_live_mode_timeout(device_id)
 
     def _cancel_live_mode_timeout(self, device_id: str) -> None:
         self.live_mode_ends_at.pop(device_id, None)
@@ -162,35 +211,14 @@ class BleManager:
 
     async def _expire_live_mode(self, device_id: str) -> None:
         await asyncio.sleep(self.settings.live_mode_max_seconds)
-        if self.reporting_modes.get(device_id) != "LIVE":
+        if self.actual_modes.get(device_id) != "LIVE":
             return
-        connection = self.connections.get(device_id)
-        if connection is not None and connection.state == "connected":
-            try:
-                await connection.send_command("MODE LOW_POWER")
-            except (ConnectionError, TimeoutError):
-                self.low_power_on_next_wake.add(device_id)
-                return
-            self.reporting_modes[device_id] = "LOW_POWER"
-            self.low_power_started_at[device_id] = datetime.now(UTC)
-            self.live_mode_ends_at.pop(device_id, None)
-            return
-        self.low_power_on_next_wake.add(device_id)
-
-    async def _apply_low_power_on_next_wake(self, device_id: str) -> None:
-        if device_id not in self.low_power_on_next_wake:
-            return
-        connection = self.connections.get(device_id)
-        if connection is None or connection.state != "connected":
-            return
-        try:
-            await connection.send_command("MODE LOW_POWER")
-        except (ConnectionError, TimeoutError):
-            return
-        self.reporting_modes[device_id] = "LOW_POWER"
-        self.low_power_started_at[device_id] = datetime.now(UTC)
-        self.low_power_on_next_wake.discard(device_id)
-        self._cancel_live_mode_timeout(device_id)
+        # Firmware owns the physical timeout. The gateway records an expectation and
+        # waits for sensor evidence instead of racing it with a second mode command.
+        self.requested_modes[device_id] = "LOW_POWER"
+        self.transition_states[device_id] = "LOW_POWER_PENDING"
+        self.transition_acknowledged[device_id] = False
+        self.live_mode_ends_at.pop(device_id, None)
 
     async def identify(self, device_id: str) -> None:
         """Run a bounded, distinctive LED pattern and leave the indicator off."""
@@ -220,7 +248,7 @@ class BleManager:
 
     def runtime(self, device_id: str, last_telemetry_at: datetime | None = None) -> dict:
         connection = self.connections.get(device_id)
-        mode = self.reporting_modes.get(device_id, "LIVE" if connection else "UNKNOWN")
+        mode = self.actual_modes.get(device_id, "UNKNOWN")
         next_wake_at = None
         seconds_to_next_wake = None
         if mode == "LOW_POWER":
@@ -237,7 +265,11 @@ class BleManager:
             "low_power_seconds_to_next_wake": seconds_to_next_wake,
             "live_on_next_wake": device_id in self.live_on_next_wake,
             "live_mode_ends_at": self.live_mode_ends_at.get(device_id),
-            "low_power_on_next_wake": device_id in self.low_power_on_next_wake,
+            "low_power_on_next_wake": False,
+            "requested_mode": self.requested_modes.get(device_id),
+            "actual_mode": mode,
+            "transition_state": self.transition_states.get(device_id, "UNKNOWN"),
+            "transition_acknowledged": self.transition_acknowledged.get(device_id, False),
         }
         return (
             {"connection_status": connection.state, "last_error": connection.last_error,

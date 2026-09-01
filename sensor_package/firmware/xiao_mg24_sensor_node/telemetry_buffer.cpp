@@ -28,3 +28,6 @@ uint8_t TelemetryBuffer::acknowledge_through(uint32_t sequence) {
   }
   return removed;
 }
+void TelemetryBuffer::mark_all_delayed() {
+  for (uint8_t i = 0; i < count_; ++i) records_[i].delayed = true;
+}

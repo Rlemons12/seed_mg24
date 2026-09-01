@@ -9,6 +9,7 @@ class TelemetryBuffer {
   bool pop(TelemetryRecord* record);
   bool peek_oldest(TelemetryRecord* record) const;
   uint8_t acknowledge_through(uint32_t sequence);
+  void mark_all_delayed();
   void clear() { count_ = 0; dropped_count_ = 0; }
   uint8_t size() const { return count_; }
   uint8_t capacity() const { return TELEMETRY_BUFFER_CAPACITY; }

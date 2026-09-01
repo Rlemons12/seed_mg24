@@ -35,3 +35,49 @@ def test_low_power_mode_is_advertised_and_runtime_only():
     assert "TelemetryMode reporting_mode = LIVE_MODE" in source
     assert 'command == "MODE EDGE_SUMMARY"' not in source
     assert "low_power_exit_pending" not in source
+
+
+def test_mode_commands_restore_and_report_authoritative_firmware_state():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    live = source[source.index('command == "MODE LIVE"') : source.index('command == "MODE LOW_POWER"')]
+    low = source[source.index('command == "MODE LOW_POWER"') : source.index('command == "BLE START"')]
+    exit_mode = source[source.index("void exit_low_power_mode() {") : source.index("void publish_low_power_snapshot() {")]
+    assert "exit_low_power_mode();" in live
+    assert "reporting_mode = LIVE_MODE;" in live
+    assert 'command_result(true, "mode_live")' in live
+    assert "reporting_mode = LOW_POWER_MODE;" in low
+    assert "enter_low_power_mode();" in low
+    assert 'command_result(true, "mode_low_power")' in low
+    assert "digitalWrite(BATTERY_ENABLE_PIN, HIGH)" in exit_mode
+    assert "digitalWrite(IMU_POWER_PIN, HIGH)" in exit_mode
+    assert "imu_initialization_attempts = 0" in exit_mode
+    assert "vibration_initialization_attempts = 0" in exit_mode
+    assert "vibration_initialized = false" in exit_mode
+    assert "initialize_imu();" in exit_mode
+
+
+def test_current_telemetry_and_heartbeat_include_actual_runtime_mode():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    telemetry = source[source.index("void ble_update_telemetry(", source.index("void ble_update_telemetry(") + 1) :]
+    assert 'reporting_mode == LIVE_MODE ? "live" : "low_power"' in telemetry
+    assert '\\"rm\\":\\"%s\\"' in telemetry
+    assert "publish_low_power_snapshot()" in source
+    assert "ble_update_telemetry(batt, ax, ay, az" in source
+    assert "encode_heartbeat(" in source
+
+
+def test_buffered_runtime_mode_evidence_is_marked_as_delayed():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    assert source.count("offline_buffer.mark_all_delayed();") >= 3
+    assert 'snprintf(ble_json, sizeof(ble_json), "%.*s,\\\"d\\\":1}"' in source
+    assert "record.delayed = !ble_connected;" in source
+    assert "heartbeat.delayed = !ble_connected;" in source
+
+
+def test_battery_adc_averaging_is_bounded():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    battery = source[source.index("float battery_voltage() {") : source.index("void print_telemetry() {")]
+    assert "kBatteryAdcSampleCount = 8" in battery
+    assert battery.count("analogRead(BATTERY_ADC_PIN)") == 2
+    assert "delay(1)" in battery
+    assert "static_cast<float>(total) / static_cast<float>(kBatteryAdcSampleCount)" in battery

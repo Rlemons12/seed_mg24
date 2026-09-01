@@ -33,7 +33,8 @@ def test_dashboard_exposes_only_live_and_low_power_mode_controls():
     assert 'command:"MODE EDGE_SUMMARY"' not in source
     assert 'command:"MODE LOW_POWER"' in source
     assert 'Telemetry mode: ${' in source
-    assert 'batteryModeStatus.textContent = "Telemetry mode: LOW POWER"' in source
+    assert "batteryModeStatus.textContent = runtimeModeText(node)" in source
+    assert 'node.transition_state = "LOW_POWER_PENDING"' in source
     assert "back in power-saving edge summary mode" not in source
     battery_panel = source.index('const battery = sensorPanel')
     mode_controls = source.index('const batteryModeActions')

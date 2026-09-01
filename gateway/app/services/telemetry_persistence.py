@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,23 @@ class PersistenceOutcome:
     rows: list[Reading]
     acknowledged_sequence: int | None = None
     duplicate: bool = False
+
+
+def _same_sensor_content(stored: str, incoming: str) -> bool:
+    """Compare packet identity content while ignoring replay transport state."""
+    try:
+        stored_payload = json.loads(stored)
+        incoming_payload = json.loads(incoming)
+    except (json.JSONDecodeError, TypeError):
+        return stored == incoming
+    if not isinstance(stored_payload, dict) or not isinstance(incoming_payload, dict):
+        return stored_payload == incoming_payload
+    # `d` is added when an unacknowledged packet is replayed. It changes how the
+    # gateway timestamps/uses the delivery, not the sensor measurement identified
+    # by boot ID and sequence number.
+    stored_payload.pop("d", None)
+    incoming_payload.pop("d", None)
+    return stored_payload == incoming_payload
 
 
 class TelemetryPersistenceService:
@@ -63,7 +81,7 @@ class TelemetryPersistenceService:
                     if existing:
                         expected_channels = set(payload.channels or {payload.event or payload.record_type: None})
                         if {row.channel for row in existing} != expected_channels or any(
-                            row.payload_json != encoded_original for row in existing
+                            not _same_sensor_content(row.payload_json, encoded_original) for row in existing
                         ):
                             state = self._sync_state(session, device.id, payload.sensor_boot_id, payload.sequence_number)
                             state.conflict_count += 1

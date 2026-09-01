@@ -54,13 +54,13 @@ class BleManager:
             await self.status_callback(device_id, state, error)
 
         async def telemetry(data_device_id: str, data: bytes) -> None:
-            await self.telemetry_callback(data_device_id, data)
             if self.reporting_modes.get(data_device_id) == "LOW_POWER":
                 self.low_power_started_at[data_device_id] = datetime.now(UTC)
             if data_device_id in self.live_on_next_wake:
                 await self._apply_live_on_next_wake(data_device_id)
             if data_device_id in self.low_power_on_next_wake:
                 await self._apply_low_power_on_next_wake(data_device_id)
+            await self.telemetry_callback(data_device_id, data)
 
         connection = DeviceConnection(
             device_id,

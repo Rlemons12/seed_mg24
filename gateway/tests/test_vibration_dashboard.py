@@ -113,6 +113,8 @@ def test_vibration_dashboard_offers_a_24_hour_history_range():
     app = (STATIC / "app.js").read_text()
     assert '"24h": 86400' in source
     assert '["24h", "24 hours"]' in app
+    assert 'if(value === "24h") option.selected = true' in app
+    assert '?.value || "24h"' in app
 
 
 def test_future_incremental_anchor_is_blocked_before_history_api_call():
@@ -222,6 +224,11 @@ def test_sensor_details_are_compact_tabbed_and_preserve_tab_state_during_live_re
     assert "request was written; waiting for sensor telemetry to confirm Live" in app
     assert "SWITCHING TO LIVE" in app and "WAITING FOR NEXT WAKE" in app
     assert ".live-input-grid--compact" in css
+
+
+def test_vibration_tab_displays_latest_readings_as_well_as_history():
+    source = (STATIC / "vibration_monitoring.js").read_text(encoding="utf-8")
+    assert '["all", "overview", "vibration"].includes(mode)' in source
 
 
 def test_sensor_card_shows_live_battery_voltage_without_inventing_percentage():

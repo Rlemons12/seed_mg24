@@ -142,7 +142,7 @@ function refreshLive() {
       });
       if (card.querySelector('.mg-module-sensor-card__toggle[aria-expanded="true"]')) {
         const container = card.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
-        const range = card.querySelector(".vibration-controls select")?.value || "1h";
+        const range = card.querySelector(".vibration-controls select")?.value || "24h";
         if (container) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch(() => {});
         const batteryPanel = card.querySelector('[data-sensor-panel="battery"]:not([hidden])');
         const batteryMonitoring = batteryPanel?.querySelector(".battery-monitoring");
@@ -204,7 +204,7 @@ function appendVibrationPanel(details, node, expanded, viewMode) {
   const rangeLabel = el("label", "Time range");
   const range = el("select"); range.setAttribute("aria-label", "Vibration chart time range");
   [["15m", "15 minutes"], ["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"]]
-    .forEach(([value, label]) => { const option = el("option", label); option.value = value; if(value === "1h") option.selected = true; range.append(option); });
+    .forEach(([value, label]) => { const option = el("option", label); option.value = value; if(value === "24h") option.selected = true; range.append(option); });
   const refreshButton = el("button", "Refresh"); refreshButton.type = "button";
   rangeLabel.append(range); controls.append(rangeLabel, refreshButton); header.append(title, controls);
   if (viewMode === "vibration") details.append(header);
@@ -561,7 +561,7 @@ $("node-list").addEventListener("mg24:sensor-disclosure", (event) => {
   if (!event.detail?.expanded || !event.detail.nodeId) return;
   const card = event.target.closest("[data-node-id]");
   const container = card?.querySelector('[data-sensor-panel]:not([hidden]) .vibration-monitoring');
-  const range = card?.querySelector(".vibration-controls select")?.value || "1h";
+  const range = card?.querySelector(".vibration-controls select")?.value || "24h";
   const node = state.nodes.find((item) => item.node_id === event.detail.nodeId);
   if (container && node) MG24VibrationMonitoring.load(container, node.node_id, node, api, range).catch((error) => {
     container.replaceChildren(el("p", error.message, "warning"));

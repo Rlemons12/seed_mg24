@@ -34,6 +34,14 @@ def test_battery_dashboard_uses_existing_dom_and_inline_svg_only():
     assert "battery-cycle-table" in source
 
 
+def test_battery_dashboard_displays_average_hourly_voltage_drop():
+    source = (ROOT / "static" / "battery_monitoring.js").read_text()
+    assert '"Average battery drop"' in source
+    assert "voltage_change_per_hour_24h" in source
+    assert "Math.max(0, -slope).toFixed(3)" in source
+    assert "V/hour" in source
+
+
 def test_wake_telemetry_refreshes_an_open_battery_tab():
     app = (ROOT / "static" / "app.js").read_text()
     assert "pendingBatteryRefreshIds.add(message.device_id)" in app

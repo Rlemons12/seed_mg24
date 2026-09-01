@@ -278,7 +278,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="index.html",
-            context={"dashboard_build": f"{__version__}-module-shell-8", "current_module": "overview"},
+            context={"dashboard_build": f"{__version__}-module-shell-11", "current_module": "overview"},
         )
 
     @app.get("/installations", include_in_schema=False)
@@ -286,7 +286,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="installations.html",
-            context={"dashboard_build": f"{__version__}-module-shell-8", "current_module": "installations"},
+            context={"dashboard_build": f"{__version__}-module-shell-11", "current_module": "installations"},
         )
 
     @app.get("/system-health", include_in_schema=False)
@@ -294,7 +294,7 @@ def create_app(settings: Settings | None = None, *, client_factory=None, scanner
         return templates.TemplateResponse(
             request=request,
             name="system_health.html",
-            context={"dashboard_build": f"{__version__}-module-shell-8", "current_module": "system-health"},
+            context={"dashboard_build": f"{__version__}-module-shell-11", "current_module": "system-health"},
         )
 
     @app.exception_handler(HTTPException)

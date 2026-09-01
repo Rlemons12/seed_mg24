@@ -372,7 +372,10 @@
         keyed(element("div", "Vibration data unavailable. Current measurements are hidden because the latest window is invalid.", "vibration-invalid"), "invalid"));
     } else {
       const mode = container.dataset.viewMode || "all";
-      if (["all", "overview"].includes(mode)) next.append(renderOverview(next, data.latest, data.baseline, data.condition, node));
+      // Keep the latest measurements visible in the dedicated Vibration tab.
+      // Low-power sensors can have too few recent windows to draw a trend, but
+      // the latest valid summary is still useful and should not disappear.
+      if (["all", "overview", "vibration"].includes(mode)) next.append(renderOverview(next, data.latest, data.baseline, data.condition, node));
       if (["all", "baseline"].includes(mode) && data.baseline?.status !== "building") next.append(renderComparison(data.latest, data.baseline, view.axis));
       if (["all", "baseline"].includes(mode)) next.append(renderFactors(data.condition));
       if (["all", "vibration"].includes(mode)) {

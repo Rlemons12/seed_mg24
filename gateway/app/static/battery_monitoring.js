@@ -21,6 +21,12 @@ window.MG24BatteryMonitoring = (() => {
     return `Approximately ${prediction.lower_hours.toFixed(1)}–${prediction.upper_hours.toFixed(1)} hours`;
   };
 
+  const voltageDropRate = (trend) => {
+    const slope = trend?.voltage_change_per_hour_24h;
+    if (typeof slope !== "number" || !Number.isFinite(slope)) return "Not enough data";
+    return `${Math.max(0, -slope).toFixed(3)} V/hour`;
+  };
+
   function stat(label, value, help) {
     const item = node("div", null, "battery-stat"); item.append(node("span", label), node("strong", value), node("small", help)); return item;
   }
@@ -54,6 +60,7 @@ window.MG24BatteryMonitoring = (() => {
     const voltage = summary.voltage.current_v == null ? "Unavailable" : `${summary.voltage.current_v.toFixed(2)} V`;
     const stats = node("div", null, "battery-stat-grid");
     [["Battery voltage", voltage, `Measured electrical value; percentage ${summary.voltage.calibration_status === "NOT_CALIBRATED" ? "not calibrated" : "unavailable"}.`],
+      ["Average battery drop", voltageDropRate(summary.voltage.trend), "Average voltage decrease per hour over up to the last 24 hours; flat or rising voltage displays 0.000 V/hour."],
       ["Current charge runtime", duration(summary.current_cycle_runtime_seconds), summary.current_cycle ? `Cycle ${summary.current_cycle.cycle_number}` : "Waiting for an observed charge cycle"],
       ["Previous charge runtime", duration(summary.history.latest_completed_runtime_seconds), `${summary.history.completed_cycles} completed cycle(s)`],
       ["Average last 5 charges", duration(summary.history.average_last_5_seconds), "Eligible comparable cycles only"],
@@ -74,5 +81,5 @@ window.MG24BatteryMonitoring = (() => {
     const charts = node("div", null, "battery-chart-grid"); charts.append(chart(history.voltage, "voltage", "Battery voltage vs time", "#2774ae"), chart([...cycles].reverse().filter((item) => item.is_complete), "runtime_seconds", "Runtime per charge cycle", "#598c35"));
     container.append(stats, node("p", summary.health.explanation, "summary"), actions, charts, node("h4", "Charge-cycle history"), historyTable(cycles));
   }
-  return {load, duration};
+  return {load, duration, voltageDropRate};
 })();

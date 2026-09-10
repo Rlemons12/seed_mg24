@@ -111,6 +111,16 @@ class VibrationConditionService:
                     SensorInstallation.node_id == node_id, SensorInstallation.interface_id == "IMU0",
                     SensorInstallation.enabled.is_(True), SensorInstallation.archived.is_(False)))
                 installation_id = installation.installation_id if installation else None
+                existing_window = session.scalar(select(VibrationWindow.id).where(
+                    VibrationWindow.registered_device_id == device.id,
+                    VibrationWindow.session_id == session_id,
+                    VibrationWindow.window_sequence == summary.window_sequence,
+                    VibrationWindow.algorithm_version == summary.algorithm_version,
+                ))
+                if existing_window is not None:
+                    condition = session.scalar(select(VibrationCondition).where(
+                        VibrationCondition.registered_device_id == device.id))
+                    return {"duplicate": True, "state": condition.state if condition else "INSUFFICIENT_DATA"}
                 baseline = session.scalar(select(VibrationBaseline).where(
                     VibrationBaseline.registered_device_id == device.id,
                     VibrationBaseline.installation_id == installation_id,
@@ -198,7 +208,23 @@ class VibrationConditionService:
                 return {"duplicate": False, "persisted": persist, "state": condition.state,
                         "score": score, "factors": factors, "baseline_count": baseline.sample_count,
                         "baseline_status": baseline.status}
-            except (IntegrityError, SQLAlchemyError):
+            except IntegrityError:
+                session.rollback()
+                # The read above and INSERT are intentionally both protected by the
+                # database constraint. If another worker committed the same window
+                # between them, treat the losing INSERT as an idempotent replay.
+                device = session.scalar(select(RegisteredDevice).where(RegisteredDevice.device_id == node_id))
+                if device is not None and session.scalar(select(VibrationWindow.id).where(
+                    VibrationWindow.registered_device_id == device.id,
+                    VibrationWindow.session_id == session_id,
+                    VibrationWindow.window_sequence == summary.window_sequence,
+                    VibrationWindow.algorithm_version == summary.algorithm_version,
+                )) is not None:
+                    condition = session.scalar(select(VibrationCondition).where(
+                        VibrationCondition.registered_device_id == device.id))
+                    return {"duplicate": True, "state": condition.state if condition else "INSUFFICIENT_DATA"}
+                raise
+            except SQLAlchemyError:
                 session.rollback()
                 raise
 

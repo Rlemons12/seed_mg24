@@ -51,11 +51,18 @@ window.MG24BatteryMonitoring = (() => {
 
   async function load(container, deviceId, api, force = false) {
     if (container.dataset.loaded === "true" && !force) return;
-    container.replaceChildren(node("p", "Loading battery history…", "muted"));
+    if (container.dataset.loading === "true") return;
+    container.dataset.loading = "true";
+    if (container.dataset.loaded !== "true") container.replaceChildren(node("p", "Loading battery history…", "muted"));
     const encoded = encodeURIComponent(deviceId);
-    const [summary, cycles, history] = await Promise.all([
-      api(`/api/devices/${encoded}/battery`), api(`/api/devices/${encoded}/battery/cycles`), api(`/api/devices/${encoded}/battery/history`),
-    ]);
+    let summary; let cycles; let history;
+    try {
+      [summary, cycles, history] = await Promise.all([
+        api(`/api/devices/${encoded}/battery`), api(`/api/devices/${encoded}/battery/cycles`), api(`/api/devices/${encoded}/battery/history`),
+      ]);
+    } finally {
+      delete container.dataset.loading;
+    }
     container.replaceChildren(); container.dataset.loaded = "true";
     const voltage = summary.voltage.current_v == null ? "Unavailable" : `${summary.voltage.current_v.toFixed(2)} V`;
     const stats = node("div", null, "battery-stat-grid");

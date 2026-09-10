@@ -43,6 +43,7 @@
 #define EDGE_SUMMARY_INTERVAL_MS 60000UL
 #define EDGE_HEARTBEAT_INTERVAL_MS 300000UL
 #define LOW_POWER_REPORT_INTERVAL_MS 300000UL
+#define LOW_POWER_VIBRATION_TIMEOUT_MS 10000UL
 #define LIVE_MODE_MAX_MS 600000UL
 #define LOW_POWER_SLEEP_SLICE_MS 1000UL
 #define PERSISTENT_SUMMARY_INTERVAL_MS 60000UL
@@ -71,6 +72,8 @@ uint32_t last_edge_sample_ms = 0, last_edge_report_ms = 0, last_edge_vibration_m
 uint32_t last_low_power_report_ms = 0;
 uint32_t last_persistent_summary_ms = 0;
 bool low_power_rails_suspended = false;
+bool low_power_vibration_active = false;
+uint32_t low_power_vibration_started_ms = 0;
 struct EdgeAccumulator { double battery, mic, accel[3], gyro[3], analog[6]; uint32_t count; } edge = {};
 uint32_t processing_error_count = 0;
 uint32_t sensor_error_count = 0;
@@ -135,6 +138,7 @@ bool initialize_imu();
 void enter_low_power_mode();
 void exit_low_power_mode();
 void publish_low_power_snapshot();
+void finish_low_power_vibration_cycle();
 void print_imu_status();
 
 const char* runtime_node_id() {
@@ -621,11 +625,17 @@ void enter_low_power_mode() {
   digitalWrite(IMU_POWER_PIN, LOW);
   digitalWrite(BATTERY_ENABLE_PIN, LOW);
   low_power_rails_suspended = true;
+  low_power_vibration_active = false;
+  vibration_initialized = false;
   last_low_power_report_ms = millis();
   last_heartbeat_ms = last_low_power_report_ms;
 }
 
 void exit_low_power_mode() {
+  // A LIVE command can arrive while the low-power vibration window is being
+  // collected and the rails are already on. In that case, keep the active
+  // acquisition but cancel the pending low-power shutdown.
+  low_power_vibration_active = false;
   if (!low_power_rails_suspended) return;
   digitalWrite(BATTERY_ENABLE_PIN, HIGH);
   digitalWrite(IMU_POWER_PIN, HIGH);
@@ -674,9 +684,26 @@ void publish_low_power_snapshot() {
 #endif
   last_heartbeat_ms = millis();
   if (!snapshot_imu_ok) sensor_error_count++;
+  vibration_initialized = snapshot_imu_ok && vibration_service.begin();
+  if (vibration_initialized) {
+    low_power_vibration_active = true;
+    low_power_vibration_started_ms = millis();
+    low_power_rails_suspended = false;
+    return;
+  }
+  if (snapshot_imu_ok) {
+    processing_error_count++;
+  }
+  finish_low_power_vibration_cycle();
+}
+
+void finish_low_power_vibration_cycle() {
   digitalWrite(IMU_POWER_PIN, LOW);
   digitalWrite(BATTERY_ENABLE_PIN, LOW);
   low_power_rails_suspended = true;
+  low_power_vibration_active = false;
+  vibration_initialized = false;
+  imu_ok = false;
 }
 
 void print_imu_status() {
@@ -1245,7 +1272,7 @@ void loop() {
       elapsed_since(initialization_now, last_imu_initialization_ms, IMU_RETRY_INTERVAL_MS)) {
     initialize_imu();
   }
-  if (!vibration_initialized && imu_ok &&
+  if (reporting_mode != LOW_POWER_MODE && !vibration_initialized && imu_ok &&
       vibration_initialization_attempts < IMU_MAX_INITIALIZATION_ATTEMPTS &&
       (vibration_initialization_attempts == 0 ||
        elapsed_since(initialization_now, last_vibration_initialization_ms, IMU_RETRY_INTERVAL_MS))
@@ -1308,14 +1335,30 @@ void loop() {
   if (factory_reset_controller.busy()) bootstrap_only = true;
   // Vibration failure is isolated: FIFO/DSP health never gates BLE, identity,
   // provisioning, or the existing telemetry path.
-  if (!factory_reset_controller.busy() && reporting_mode != LOW_POWER_MODE) vibration_service.service();
-#if BLE_SUPPORTED
+  if (!factory_reset_controller.busy() &&
+      (reporting_mode != LOW_POWER_MODE || low_power_vibration_active)) {
+    vibration_service.service();
+  }
   const uint32_t vibration_now = millis();
   if (reporting_mode == LIVE_MODE) {
     last_edge_vibration_ms = vibration_now;
+#if BLE_SUPPORTED
     ble_publish_vibration();
-  }
 #endif
+  } else if (low_power_vibration_active) {
+    const ProductionVibrationResult& latest = vibration_service.latest();
+    if (latest.validity == seed_mg24::VibrationResultValidity::VALID &&
+        latest.window_sequence != 0) {
+#if BLE_SUPPORTED
+      ble_publish_vibration();
+#endif
+      finish_low_power_vibration_cycle();
+    } else if (elapsed_since(vibration_now, low_power_vibration_started_ms,
+                             LOW_POWER_VIBRATION_TIMEOUT_MS)) {
+      processing_error_count++;
+      finish_low_power_vibration_cycle();
+    }
+  }
   if (bootstrap_only) { delay(5); return; }
   update_microphone();
 
@@ -1359,5 +1402,7 @@ void loop() {
   // completing. The BLE event retains it in ble_command_pending; this bounded
   // slice returns to the command drain above within one second, where
   // exit_low_power_mode() restores both rails and reinitializes the IMU.
-  if (reporting_mode == LOW_POWER_MODE) LowPower.sleep(LOW_POWER_SLEEP_SLICE_MS);
+  if (reporting_mode == LOW_POWER_MODE && !low_power_vibration_active) {
+    LowPower.sleep(LOW_POWER_SLEEP_SLICE_MS);
+  }
 }

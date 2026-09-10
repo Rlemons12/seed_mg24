@@ -122,6 +122,21 @@ def test_baseline_builds_freezes_excludes_invalid_deduplicates_and_persists_rest
     assert restarted.process("NODE-1", summary(4), session_id="boot", observed_at=now + timedelta(seconds=3))["duplicate"]
 
 
+def test_replayed_older_persisted_window_is_idempotent(settings):
+    _engine, factory, service = setup_service(settings, minimum_windows=10, persistence_interval_seconds=0)
+    now = datetime.now(UTC)
+    service.process("NODE-1", summary(1), session_id="boot", observed_at=now)
+    service.process("NODE-1", summary(2), session_id="boot", observed_at=now + timedelta(seconds=1))
+
+    replay = service.process("NODE-1", summary(1), session_id="boot", observed_at=now + timedelta(seconds=2))
+
+    assert replay["duplicate"] is True
+    with factory() as session:
+        baseline = session.scalar(select(VibrationBaseline))
+        assert baseline.sample_count == 2
+        assert len(list(session.scalars(select(VibrationWindow)))) == 2
+
+
 def test_condition_hysteresis_factors_recovery_and_relearn(settings):
     _engine, factory, service = setup_service(settings, minimum_windows=3, persistence_windows=2)
     now = datetime.now(UTC)

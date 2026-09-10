@@ -47,3 +47,10 @@ def test_wake_telemetry_refreshes_an_open_battery_tab():
     assert "pendingBatteryRefreshIds.add(message.device_id)" in app
     assert "message.data?.channels?.battery_voltage" in app
     assert "MG24BatteryMonitoring.load(batteryMonitoring, node.node_id, api, true)" in app
+
+
+def test_live_battery_refresh_keeps_successful_content_visible_and_coalesces_requests():
+    source = (ROOT / "static" / "battery_monitoring.js").read_text()
+    assert 'if (container.dataset.loading === "true") return' in source
+    assert 'if (container.dataset.loaded !== "true") container.replaceChildren' in source
+    assert "delete container.dataset.loading" in source

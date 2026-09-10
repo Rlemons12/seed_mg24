@@ -83,4 +83,5 @@ class ProductionVibrationService {
   uint32_t alignment_error_count_;
   uint32_t service_read_error_count_;
   uint32_t last_service_us_;
+  uint32_t window_sequence_;
 };

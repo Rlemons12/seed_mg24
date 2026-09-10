@@ -23,7 +23,7 @@ def test_low_power_mode_gates_sensor_rails_and_vibration_work():
     assert "last_heartbeat_ms = last_low_power_report_ms" in enter
     assert "digitalWrite(IMU_POWER_PIN, HIGH)" in snapshot
     assert "digitalWrite(BATTERY_ENABLE_PIN, HIGH)" in snapshot
-    assert "reporting_mode != LOW_POWER_MODE) vibration_service.service()" in source
+    assert "reporting_mode != LOW_POWER_MODE || low_power_vibration_active" in source
     assert "LIVE_MODE_MAX_MS 600000UL" in source
     assert "live_mode_started_ms = millis();" in source
     assert "reporting_mode = LOW_POWER_MODE;\n    enter_low_power_mode();" in source
@@ -54,6 +54,26 @@ def test_mode_commands_restore_and_report_authoritative_firmware_state():
     assert "vibration_initialization_attempts = 0" in exit_mode
     assert "vibration_initialized = false" in exit_mode
     assert "initialize_imu();" in exit_mode
+
+
+def test_low_power_wake_collects_one_bounded_vibration_window():
+    source = FIRMWARE.read_text(encoding="utf-8")
+    snapshot = source[source.index("void publish_low_power_snapshot() {") : source.index("void print_imu_status() {")]
+    loop = source[source.index("void loop() {") :]
+    assert "LOW_POWER_VIBRATION_TIMEOUT_MS 10000UL" in source
+    assert "vibration_service.begin()" in snapshot
+    assert "low_power_vibration_active = true" in snapshot
+    assert "vibration_service.service();" in loop
+    assert "ble_publish_vibration();" in loop
+    assert "finish_low_power_vibration_cycle();" in loop
+    assert "LOW_POWER_MODE && !low_power_vibration_active" in loop
+
+
+def test_vibration_sequence_survives_low_power_reinitialization():
+    service = (FIRMWARE.parent / "vibration_service.cpp").read_text(encoding="utf-8")
+    header = (FIRMWARE.parent / "vibration_service.h").read_text(encoding="utf-8")
+    assert "uint32_t window_sequence_;" in header
+    assert "const uint32_t sequence = ++window_sequence_;" in service
 
 
 def test_current_telemetry_and_heartbeat_include_actual_runtime_mode():

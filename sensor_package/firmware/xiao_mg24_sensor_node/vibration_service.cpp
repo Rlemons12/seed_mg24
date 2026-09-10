@@ -40,7 +40,8 @@ ProductionVibrationService::ProductionVibrationService(LSM6DS3& imu,
       fifo_overrun_count_(0),
       alignment_error_count_(0),
       service_read_error_count_(0),
-      last_service_us_(0) {}
+      last_service_us_(0),
+      window_sequence_(0) {}
 
 bool ProductionVibrationService::begin() {
   runtime_.reset();
@@ -185,7 +186,10 @@ void ProductionVibrationService::processReadyWindow() {
     markFault(seed_mg24::VibrationResultValidity::INSUFFICIENT_SAMPLES);
     return;
   }
-  const uint32_t sequence = runtime_.windowSequence() + 1;
+  // begin() is called again whenever low-power mode wakes the IMU. Keep the
+  // wire sequence monotonic for the lifetime of this boot so those summaries
+  // remain distinct within the gateway's BLE session.
+  const uint32_t sequence = ++window_sequence_;
   latest_.window_sequence = sequence;
   latest_.window_start_us = window.timing.window_start_us;
   latest_.window_end_us = window.timing.window_end_us;
